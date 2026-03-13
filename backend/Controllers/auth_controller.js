@@ -21,11 +21,18 @@ const { JWT_SECRET } = require("../secrets.js");
 
 /** SMTP transport for sending verification emails via Gmail */
 const emailTransporter = nodemailer.createTransport({
-  service: "gmail",
+  host: "smtp.gmail.com",
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL,
     pass: process.env.PASSWORD,
   },
+  connectionTimeout: 10000,
+  greetingTimeout: 10000,
+  socketTimeout: 15000,
+  logger: true,
+  debug: true,
 });
 
 /**
@@ -349,15 +356,14 @@ const dispatchLoginOtp = async (req, res) => {
       html: buildOtpEmailTemplate(otpCode, "login"),
     };
 
-    await emailTransporter.sendMail(emailPayload, function (err, _data) {
-      if (err) {
-        console.log("Email delivery error:", err);
-        return sendResponse(res, 400, { message: "Failed to send verification email" });
-      } else {
-        console.log("Login OTP email sent successfully");
-        return sendResponse(res, 200, { message: "OTP sent" });
-      }
-    });
+    try {
+      await emailTransporter.sendMail(emailPayload);
+      console.log("Login OTP email sent successfully");
+      return sendResponse(res, 200, { message: "OTP sent" });
+    } catch (emailError) {
+      console.error("Email delivery error:", emailError);
+      return sendResponse(res, 400, { message: "Failed to send verification email" });
+    }
   } catch (otpError) {
     console.error("OTP dispatch error:", otpError.message);
     return sendResponse(res, 500, { error: "Internal Server Error" });
@@ -421,15 +427,14 @@ const dispatchSignupOtp = async (req, res) => {
       html: buildOtpEmailTemplate(otpCode, "signup"),
     };
 
-    await emailTransporter.sendMail(emailPayload, function (err, _data) {
-      if (err) {
-        console.log("Signup OTP email error:", err);
-        return sendResponse(res, 400, { error: "Failed to send verification email" });
-      } else {
-        console.log("Signup OTP sent successfully");
-        return sendResponse(res, 200, { message: "OTP sent to your email" });
-      }
-    });
+    try {
+      await emailTransporter.sendMail(emailPayload);
+      console.log("Signup OTP sent successfully");
+      return sendResponse(res, 200, { message: "OTP sent to your email" });
+    } catch (emailError) {
+      console.error("Signup OTP email error:", emailError);
+      return sendResponse(res, 400, { error: "Failed to send verification email" });
+    }
   } catch (signupOtpError) {
     console.error("Signup OTP error:", signupOtpError.message);
     return sendResponse(res, 500, { error: "Internal Server Error" });
