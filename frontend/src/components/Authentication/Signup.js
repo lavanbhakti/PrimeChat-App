@@ -1,70 +1,94 @@
-import chatContext from "../../context/chatContext";
-import { useState, useContext } from "react";
+/**
+ * PrimeChat Signup Component
+ * 
+ * Handles new user registration with email OTP verification.
+ * The flow is: 1) Enter details → 2) Send OTP → 3) Verify OTP → 4) Register.
+ * On success, stores JWT and redirects to dashboard.
+ * 
+ * @module SignupForm
+ */
+
+import React from "react";
 import {
-  Flex,
-  Heading,
-  Input,
-  Button,
-  InputGroup,
   Stack,
-  InputLeftElement,
-  Box,
-  Link,
-  Avatar,
-  FormControl,
+  Button,
+  Input,
+  InputGroup,
   InputRightElement,
-  Card,
-  CardBody,
-  useToast,
+  Text,
   HStack,
   PinInput,
   PinInputField,
-  Text,
 } from "@chakra-ui/react";
-import { LockIcon, CheckIcon } from "@chakra-ui/icons";
+import { useState, useContext } from "react";
+import { useNavigate } from "react-router-dom";
+import primeChatContext from "../../context/chatContext";
+import { useToast } from "@chakra-ui/react";
+import { ViewOffIcon, ViewIcon } from "@chakra-ui/icons";
 
-const Signup = (props) => {
-  const context = useContext(chatContext);
-  const { hostName } = context;
-  const toast = useToast();
+const Signup = () => {
+  const navigate = useNavigate();
+  const appContext = useContext(primeChatContext);
+  const { setIsAuthenticated, setUser, socket, hostName, fetchData } = appContext;
 
-  const [showPassword, setShowPassword] = useState(false);
+  const [fullName, setFullName] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [isPasswordHidden, setIsPasswordHidden] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const [name, setname] = useState("");
-  const [email, setemail] = useState("");
-  const [password, setpassword] = useState("");
-  const [confirmpassword, setconfirmpassword] = useState("");
-
-  // OTP state
-  const [otp, setOtp] = useState("");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpVerified, setOtpVerified] = useState(false);
+  // OTP verification state
+  const [otpCode, setOtpCode] = useState("");
+  const [isOtpSent, setIsOtpSent] = useState(false);
+  const [isEmailVerified, setIsEmailVerified] = useState(false);
   const [isSendingOtp, setIsSendingOtp] = useState(false);
   const [isVerifyingOtp, setIsVerifyingOtp] = useState(false);
 
-  const handletabs = props.handleTabsChange;
+  const toast = useToast();
 
-  function showtoast(description) {
+  /**
+   * Displays a notification toast with consistent styling.
+   */
+  const showNotification = (title, description, status) => {
     toast({
-      title: "An error occurred.",
-      description: description,
-      status: "error",
+      title,
+      description,
+      status,
       duration: 5000,
       isClosable: true,
+      position: "bottom",
     });
-  }
+  };
 
-  const handleShowClick = () => setShowPassword(!showPassword);
+  /**
+   * Validates input fields before allowing OTP request or registration.
+   * @returns {boolean} True if all fields are valid
+   */
+  const validateFormFields = () => {
+    if (!fullName || !email || !password || !confirmPassword) {
+      showNotification("Missing Fields", "All fields are required", "warning");
+      return false;
+    }
 
-  const handleSendOtp = async () => {
-    if (!email || !email.includes("@") || !email.includes(".")) {
-      showtoast("Please enter a valid email address");
-      return;
+    if (password !== confirmPassword) {
+      showNotification("Password Mismatch", "Passwords do not match", "error");
+      return false;
     }
-    if (email.length > 50) {
-      showtoast("Email should be at most 50 characters long");
-      return;
+
+    if (password.length < 6) {
+      showNotification("Weak Password", "Password must be at least 6 characters", "warning");
+      return false;
     }
+
+    return true;
+  };
+
+  /**
+   * Requests an OTP to be sent to the user's email for verification.
+   */
+  const requestVerificationCode = async () => {
+    if (!validateFormFields()) return;
 
     setIsSendingOtp(true);
     try {
@@ -73,32 +97,28 @@ const Signup = (props) => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email }),
       });
-      const data = await response.json();
 
-      if (response.ok) {
-        setOtpSent(true);
-        setOtpVerified(false);
-        setOtp("");
-        toast({
-          title: "OTP Sent!",
-          description: "Check your email for the verification code",
-          status: "success",
-          duration: 5000,
-          isClosable: true,
-        });
+      const responseData = await response.json();
+
+      if (response.status === 200) {
+        showNotification("OTP Sent", "Check your email for the verification code", "success");
+        setIsOtpSent(true);
       } else {
-        showtoast(data.error || "Failed to send OTP");
+        showNotification("Error", responseData.error || "Failed to send OTP", "error");
       }
-    } catch (error) {
-      showtoast("Failed to send OTP. Please try again.");
+    } catch (networkError) {
+      showNotification("Connection Error", "Unable to reach the server", "error");
     } finally {
       setIsSendingOtp(false);
     }
   };
 
-  const handleVerifyOtp = async () => {
-    if (!otp || otp.length !== 6) {
-      showtoast("Please enter the 6-digit OTP");
+  /**
+   * Verifies the OTP entered by the user against the server.
+   */
+  const confirmVerificationCode = async () => {
+    if (!otpCode || otpCode.length < 6) {
+      showNotification("Invalid OTP", "Please enter the complete 6-digit code", "warning");
       return;
     }
 
@@ -107,298 +127,202 @@ const Signup = (props) => {
       const response = await fetch(`${hostName}/auth/verify-signup-otp`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, otp }),
+        body: JSON.stringify({ email, otp: otpCode }),
       });
-      const data = await response.json();
 
-      if (response.ok && data.verified) {
-        setOtpVerified(true);
-        toast({
-          title: "Email Verified!",
-          description: "You can now complete your signup",
-          status: "success",
-          duration: 3000,
-          isClosable: true,
-        });
+      const responseData = await response.json();
+
+      if (response.status === 200 && responseData.verified) {
+        showNotification("Verified", "Email verified successfully!", "success");
+        setIsEmailVerified(true);
       } else {
-        showtoast(data.error || "Invalid OTP");
+        showNotification("Verification Failed", responseData.error || "Invalid OTP", "error");
       }
-    } catch (error) {
-      showtoast("Failed to verify OTP. Please try again.");
+    } catch (networkError) {
+      showNotification("Connection Error", "Unable to reach the server", "error");
     } finally {
       setIsVerifyingOtp(false);
     }
   };
 
-  const handleSignup = async (e) => {
+  /**
+   * Submits the registration form with verified OTP.
+   * Creates the user account and automatically logs them in.
+   */
+  const submitRegistration = async (e) => {
     e.preventDefault();
 
-    if (email === "" || name === "" || password === "") {
-      showtoast("All fields are required");
+    if (!validateFormFields()) return;
+
+    if (!isEmailVerified) {
+      showNotification("Verification Required", "Please verify your email first", "warning");
       return;
-    } else if (!otpVerified) {
-      showtoast("Please verify your email with OTP first");
-      return;
-    } else if (name.length > 20 || name.length < 3) {
-      showtoast("Name should be atlest 3 and atmost 20 characters long");
-      return;
-    } else if (!email.includes("@") || !email.includes(".")) {
-      showtoast("Invalid email");
-      return;
-    } else if (email.length > 50) {
-      showtoast("Email should be atmost 50 characters long");
-      return;
-    } else if (password.length < 8 || password.length > 20) {
-      showtoast("Invalid Password");
-      return;
-    } else if (password !== confirmpassword) {
-      showtoast("Passwords do not match");
-      return;
-    } else {
-      const payload = {
+    }
+
+    setIsSubmitting(true);
+    try {
+      const registrationPayload = {
+        name: fullName,
         email,
-        name,
         password,
-        otp,
+        otp: otpCode,
       };
 
-      toast.promise(
-        fetch(`${hostName}/auth/register`, {
-          method: "POST",
+      const response = await fetch(`${hostName}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(registrationPayload),
+      });
+
+      const responseData = await response.json();
+
+      if (response.status === 200) {
+        localStorage.setItem("token", responseData.authtoken);
+        setIsAuthenticated(true);
+
+        // Fetch the newly created user profile
+        const profileResponse = await fetch(`${hostName}/auth/me`, {
+          method: "GET",
           headers: {
             "Content-Type": "application/json",
+            "auth-token": responseData.authtoken,
           },
-          body: JSON.stringify(payload),
-        })
-          .then((response) => {
-            if (response.status !== 200) {
-              response.json().then((resdata) => { });
-              throw new Error("Failed to fetch data");
-            } else {
-              response.json().then((resdata) => {
-                localStorage.setItem("token", resdata.authtoken);
-                handletabs(0);
-              });
-            }
-          })
-          .catch((error) => { }),
-        {
-          loading: { title: "Creating account...", description: "please wait" },
-          success: {
-            title: "Account created.",
-            description: "We have created your account for you.",
-          },
-          error: {
-            title: "An error occurred.",
-            description: "We were unable to create your account.",
-          },
-        }
-      );
+        });
+
+        const userProfile = await profileResponse.json();
+        setUser(userProfile);
+        localStorage.setItem("user", JSON.stringify(userProfile));
+        socket.emit("setup", userProfile._id);
+        fetchData();
+        navigate("/dashboard");
+        showNotification("Welcome!", "Account created successfully", "success");
+      } else {
+        showNotification("Registration Failed", responseData.error || "Something went wrong", "error");
+      }
+    } catch (networkError) {
+      showNotification("Connection Error", "Unable to reach the server", "error");
     }
+    setIsSubmitting(false);
   };
 
   return (
-    <Flex
-      flexDirection="column"
-      width="100%"
-      height="70vh"
-      justifyContent="center"
-      alignItems="center"
-      borderRadius={15}
-    >
-      <Stack
-        flexDir="column"
-        mb="2"
-        justifyContent="center"
-        alignItems="center"
-      >
-        <Avatar bg="purple.300" />
-        <Heading color="pruple.400">Welcome</Heading>
-        <Card minW={{ base: "90%", md: "468px" }} borderRadius={15} shadow={0}>
-          <CardBody p={0}>
-            <form>
-              <Stack spacing={4}>
-                <FormControl>
-                  <InputGroup
-                    borderEndRadius={"10px"}
-                    borderStartRadius={"10px"}
-                    size={"lg"}
-                  >
-                    <Input
-                      type="text"
-                      placeholder="Enter your name"
-                      focusBorderColor="purple.500"
-                      onChange={(e) => setname(e.target.value)}
-                      required
-                    />
-                  </InputGroup>
-                </FormControl>
+    <form onSubmit={submitRegistration}>
+      <Stack spacing={4} mt={4}>
+        <Input
+          type="text"
+          placeholder="Full Name"
+          value={fullName}
+          onChange={(e) => setFullName(e.target.value)}
+        />
 
-                <FormControl>
-                  <InputGroup
-                    borderEndRadius={"10px"}
-                    borderStartRadius={"10px"}
-                    size={"lg"}
-                  >
-                    <Input
-                      type="email"
-                      placeholder="Email address"
-                      focusBorderColor="purple.500"
-                      onChange={(e) => {
-                        setemail(e.target.value);
-                        // Reset OTP state if email changes
-                        if (otpSent) {
-                          setOtpSent(false);
-                          setOtpVerified(false);
-                          setOtp("");
-                        }
-                      }}
-                      isDisabled={otpVerified}
-                    />
-                    <InputRightElement width="6rem" h="100%">
-                      {otpVerified ? (
-                        <Button
-                          size="sm"
-                          colorScheme="green"
-                          variant="ghost"
-                          leftIcon={<CheckIcon />}
-                          isDisabled
-                        >
-                          Verified
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          colorScheme="purple"
-                          onClick={handleSendOtp}
-                          isLoading={isSendingOtp}
-                          loadingText="..."
-                        >
-                          {otpSent ? "Resend" : "Send OTP"}
-                        </Button>
-                      )}
-                    </InputRightElement>
-                  </InputGroup>
-                </FormControl>
+        <Input
+          type="email"
+          placeholder="Email Address"
+          value={email}
+          onChange={(e) => {
+            setEmail(e.target.value);
+            // Reset verification status if email changes
+            setIsOtpSent(false);
+            setIsEmailVerified(false);
+            setOtpCode("");
+          }}
+          isDisabled={isEmailVerified}
+        />
 
-                {/* OTP Input - visible after OTP is sent */}
-                {otpSent && !otpVerified && (
-                  <FormControl>
-                    <Box textAlign="center">
-                      <Text fontSize="sm" color="gray.500" mb={2}>
-                        Enter the 6-digit OTP sent to your email
-                      </Text>
-                      <HStack justify="center" mb={2}>
-                        <PinInput
-                          otp
-                          size="md"
-                          value={otp}
-                          onChange={(value) => setOtp(value)}
-                          focusBorderColor="purple.500"
-                        >
-                          <PinInputField />
-                          <PinInputField />
-                          <PinInputField />
-                          <PinInputField />
-                          <PinInputField />
-                          <PinInputField />
-                        </PinInput>
-                      </HStack>
-                      <Button
-                        size="sm"
-                        colorScheme="purple"
-                        onClick={handleVerifyOtp}
-                        isLoading={isVerifyingOtp}
-                        loadingText="Verifying..."
-                        isDisabled={otp.length !== 6}
-                      >
-                        Verify OTP
-                      </Button>
-                    </Box>
-                  </FormControl>
-                )}
+        <InputGroup>
+          <Input
+            type={isPasswordHidden ? "password" : "text"}
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+          />
+          <InputRightElement>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setIsPasswordHidden(!isPasswordHidden)}
+            >
+              {isPasswordHidden ? <ViewIcon /> : <ViewOffIcon />}
+            </Button>
+          </InputRightElement>
+        </InputGroup>
 
-                <FormControl>
-                  <InputGroup
-                    borderEndRadius={"10px"}
-                    borderStartRadius={"10px"}
-                    size={"lg"}
-                  >
-                    <InputLeftElement
-                      pointerEvents="none"
-                      color="gray.300"
-                      children={<LockIcon color="gray.300" />}
-                    />
-                    <Input
-                      type={showPassword ? "text" : "password"}
-                      placeholder="Password"
-                      focusBorderColor="purple.500"
-                      onChange={(e) => setpassword(e.target.value)}
-                    />
-                    <InputRightElement mx={1}>
-                      <Button
-                        fontSize={"x-small"}
-                        size={"xs"}
-                        onClick={handleShowClick}
-                      >
-                        {showPassword ? "Hide" : "Show"}
-                      </Button>
-                    </InputRightElement>
-                  </InputGroup>
+        <Input
+          type="password"
+          placeholder="Confirm Password"
+          value={confirmPassword}
+          onChange={(e) => setConfirmPassword(e.target.value)}
+        />
 
-                  <InputGroup
-                    borderEndRadius={"10px"}
-                    borderStartRadius={"10px"}
-                    size={"lg"}
-                    my={4}
-                  >
-                    <InputLeftElement
-                      pointerEvents="none"
-                      color="gray.300"
-                      children={<LockIcon color="gray.300" />}
-                    />
-                    <Input
-                      textOverflow={"ellipsis"}
-                      type={showPassword ? "text" : "password"}
-                      placeholder="Confirm Password"
-                      focusBorderColor="purple.500"
-                      onChange={(e) => setconfirmpassword(e.target.value)}
-                    />
-                    <InputRightElement mx={1}>
-                      <Button
-                        fontSize={"x-small"}
-                        size={"xs"}
-                        onClick={handleShowClick}
-                      >
-                        {showPassword ? "Hide" : "Show"}
-                      </Button>
-                    </InputRightElement>
-                  </InputGroup>
-                </FormControl>
-                <Button
-                  borderRadius={10}
-                  type="submit"
-                  variant="solid"
-                  colorScheme="purple"
-                  width="full"
-                  onClick={handleSignup}
-                  isDisabled={!otpVerified}
-                  opacity={otpVerified ? 1 : 0.6}
-                >
-                  Signup
-                </Button>
-              </Stack>
-            </form>
-          </CardBody>
-        </Card>
+        {/* OTP Verification Flow */}
+        {!isEmailVerified && !isOtpSent && (
+          <Button
+            colorScheme="blue"
+            variant="outline"
+            onClick={requestVerificationCode}
+            isLoading={isSendingOtp}
+            loadingText="Sending OTP..."
+          >
+            Verify Email
+          </Button>
+        )}
+
+        {isOtpSent && !isEmailVerified && (
+          <>
+            <Text fontSize="sm" textAlign="center" color="gray.500">
+              Enter the 6-digit code sent to your email
+            </Text>
+            <HStack justify="center">
+              <PinInput
+                otp
+                size="lg"
+                value={otpCode}
+                onChange={(value) => setOtpCode(value)}
+              >
+                <PinInputField />
+                <PinInputField />
+                <PinInputField />
+                <PinInputField />
+                <PinInputField />
+                <PinInputField />
+              </PinInput>
+            </HStack>
+            <Button
+              colorScheme="green"
+              onClick={confirmVerificationCode}
+              isLoading={isVerifyingOtp}
+              loadingText="Verifying..."
+            >
+              Verify OTP
+            </Button>
+            <Button
+              variant="link"
+              size="sm"
+              onClick={requestVerificationCode}
+              isLoading={isSendingOtp}
+            >
+              Resend Code
+            </Button>
+          </>
+        )}
+
+        {isEmailVerified && (
+          <Text fontSize="sm" color="green.500" textAlign="center">
+            ✅ Email verified successfully
+          </Text>
+        )}
+
+        <Button
+          colorScheme="purple"
+          type="submit"
+          isLoading={isSubmitting}
+          loadingText="Creating Account..."
+          isDisabled={!isEmailVerified}
+        >
+          Create Account
+        </Button>
       </Stack>
-      <Box>
-        Already have account?{" "}
-        <Link color="purple.500" onClick={() => handletabs(0)}>
-          login
-        </Link>
-      </Box>
-    </Flex>
+    </form>
   );
 };
 

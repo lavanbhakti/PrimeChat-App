@@ -1,71 +1,113 @@
-const express = require("express");
-const router = express.Router();
+/**
+ * PrimeChat DevWorkspace (CodePad) Controller
+ * 
+ * Manages encrypted notes for the DevWorkspace feature.
+ * Notes are stored encrypted using AES-256-CBC, identified by a
+ * SHA-256 hash of the user's secret key. The server never sees
+ * the plaintext key or content — true zero-knowledge encryption.
+ * 
+ * @module CodePadController
+ */
+
 const CodePad = require("../Models/CodePad");
 const {
-  encryptWithSecret,
-  decryptWithSecret,
-  hashKey,
+  encipherContent,
+  decipherContent,
+  generateNoteIdentifier,
 } = require("../utils/encrypt");
 
-const openEditor = async (req, res) => {
+/**
+ * POST /codepad/open
+ * Opens an encrypted note using the provided secret key.
+ * If no note exists for this key, creates an empty note entry.
+ * Otherwise, decrypts and returns the stored content.
+ */
+const loadEncryptedNote = async (req, res) => {
   try {
     const { key } = req.body;
-    if (!key) return res.status(400).json({ error: "Missing secret key" });
 
-    const noteId = hashKey(key);
-    let doc = await CodePad.findOne({ noteId });
+    if (!key) {
+      return res.status(400).json({ error: "Secret key is required" });
+    }
 
-    if (!doc) {
-      doc = new CodePad({ noteId, ciphertext: "", iv: "" });
-      await doc.save();
+    const documentId = generateNoteIdentifier(key);
+    let noteDocument = await CodePad.findOne({ noteId: documentId });
+
+    // First-time access: create an empty note placeholder
+    if (!noteDocument) {
+      noteDocument = new CodePad({ noteId: documentId, ciphertext: "", iv: "" });
+      await noteDocument.save();
       return res.json({ text: "" });
     }
 
-    if (!doc.ciphertext) return res.json({ text: "" });
-    const text = decryptWithSecret(doc.ciphertext, doc.iv, key);
-    res.json({ text });
-  } catch (err) {
-    console.error("open error", err);
-    res.status(500).json({ error: "Server error" });
+    // Empty note with no content yet
+    if (!noteDocument.ciphertext) {
+      return res.json({ text: "" });
+    }
+
+    // Decrypt and return the note content
+    const decryptedContent = decipherContent(noteDocument.ciphertext, noteDocument.iv, key);
+    return res.json({ text: decryptedContent });
+  } catch (loadError) {
+    console.error("Note load error:", loadError);
+    return res.status(500).json({ error: "Failed to load note" });
   }
 };
 
-const saveEditor = async (req, res) => {
+/**
+ * POST /codepad/save
+ * Encrypts and persists the note content using the provided secret key.
+ * Uses upsert to create the document if it doesn't exist.
+ */
+const persistEncryptedNote = async (req, res) => {
   try {
     const { key, text } = req.body;
-    console.log(req.body);
-    if (!key) return res.status(400).json({ error: "Missing key" });
-    const noteId = hashKey(key);
-    console.log(`noteId: ${noteId}`);
-    const { iv, ciphertext } = encryptWithSecret(text || "", key);
-    console.log(`iv: ${iv}, ciphertext: ${ciphertext}`);
+
+    if (!key) {
+      return res.status(400).json({ error: "Secret key is required" });
+    }
+
+    const documentId = generateNoteIdentifier(key);
+    const { iv, ciphertext } = encipherContent(text || "", key);
+
     await CodePad.findOneAndUpdate(
-      { noteId },
+      { noteId: documentId },
       { ciphertext, iv, updatedAt: new Date() },
-      { upsert: true, new: true },
+      { upsert: true, new: true }
     );
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("save error", err);
-    res.status(500).json({ error: "Server error" });
+
+    return res.json({ ok: true });
+  } catch (saveError) {
+    console.error("Note save error:", saveError);
+    return res.status(500).json({ error: "Failed to save note" });
   }
 };
 
-const deleteEditor = async (req, res) => {
+/**
+ * POST /codepad/delete
+ * Permanently removes an encrypted note from the database.
+ * The note is identified by the hash of the provided secret key.
+ */
+const destroyEncryptedNote = async (req, res) => {
   try {
     const { key } = req.body;
-    if (!key) return res.status(400).json({ error: "Missing key" });
-    const noteId = hashKey(key);
-    await CodePad.findOneAndDelete({ noteId });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error("delete error", err);
-    res.status(500).json({ error: "Server error" });
+
+    if (!key) {
+      return res.status(400).json({ error: "Secret key is required" });
+    }
+
+    const documentId = generateNoteIdentifier(key);
+    await CodePad.findOneAndDelete({ noteId: documentId });
+
+    return res.json({ ok: true });
+  } catch (deleteError) {
+    console.error("Note deletion error:", deleteError);
+    return res.status(500).json({ error: "Failed to delete note" });
   }
 };
 
 module.exports = {
-  openEditor,
-  saveEditor,
-  deleteEditor,
+  loadEncryptedNote,
+  persistEncryptedNote,
+  destroyEncryptedNote,
 };

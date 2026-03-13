@@ -1,163 +1,206 @@
+/**
+ * PrimeChat WebSocket Event Handlers
+ * 
+ * Registers all real-time communication event handlers for each
+ * connected client. Manages user presence, chat room membership,
+ * message dispatch (direct + group + AI bot), typing indicators,
+ * message deletion, and group lifecycle events.
+ * 
+ * @module SocketHandlers
+ */
+
 const Conversation = require("../Models/Conversation.js");
 const User = require("../Models/User.js");
 const {
-  getAiResponse,
-  sendMessageHandler,
-  sendGroupMessageHandler,
-  deleteMessageHandler,
+  generateAiChatReply,
+  processDirectMessage,
+  processGroupMessage,
+  handleMessageRemoval,
 } = require("../Controllers/message_controller.js");
 
-module.exports = (io, socket) => {
-  let currentUserId = null;
+/**
+ * Identifies which conversation members are currently connected
+ * to a specific chat room by cross-referencing personal and room sockets.
+ * 
+ * @param {import('socket.io').Server} io - Socket.IO server instance
+ * @param {Array} membersList - Populated members array from conversation
+ * @param {string} roomId - The conversation/room ID to check
+ * @returns {string[]} Array of member IDs currently in the room
+ */
+function getActiveRoomMembers(io, membersList, roomId) {
+  const activeMemberIds = [];
+  const chatRoom = io.sockets.adapter.rooms.get(roomId);
 
-  // Setup user in a room
-  socket.on("setup", async (id) => {
-    currentUserId = id;
-    socket.join(id);
-    console.log("User joined personal room", id);
-    socket.emit("user setup", id);
+  for (const member of membersList) {
+    const personalRoom = io.sockets.adapter.rooms.get(member._id.toString());
+    if (personalRoom && chatRoom) {
+      const memberSocketId = Array.from(personalRoom)[0];
+      if (chatRoom.has(memberSocketId)) {
+        activeMemberIds.push(member._id.toString());
+      }
+    }
+  }
 
-    // change isOnline to true
-    await User.findByIdAndUpdate(id, { isOnline: true });
+  return activeMemberIds;
+}
 
-    const conversations = await Conversation.find({
-      members: { $in: [id] },
+/**
+ * Checks if a specific user is currently viewing a chat room.
+ * 
+ * @param {import('socket.io').Server} io - Socket.IO server instance
+ * @param {string} userId - The user ID to check
+ * @param {string} roomId - The conversation room ID
+ * @returns {boolean} True if the user is in the room
+ */
+function isUserInChatRoom(io, userId, roomId) {
+  const personalRoom = io.sockets.adapter.rooms.get(userId.toString());
+  if (!personalRoom) return false;
+
+  const userSocketId = Array.from(personalRoom)[0];
+  const chatRoom = io.sockets.adapter.rooms.get(roomId);
+  return chatRoom ? chatRoom.has(userSocketId) : false;
+}
+
+/**
+ * Registers all WebSocket event handlers for a connected client.
+ * 
+ * @param {import('socket.io').Server} io - Socket.IO server instance
+ * @param {import('socket.io').Socket} clientSocket - The connected client socket
+ */
+module.exports = (io, clientSocket) => {
+  let connectedUserId = null;
+
+  // ──────────── User Setup & Presence ────────────
+
+  /**
+   * Handles initial user setup — joins personal room,
+   * sets online status, and notifies active conversations.
+   */
+  clientSocket.on("setup", async (userId) => {
+    connectedUserId = userId;
+    clientSocket.join(userId);
+    console.log("User connected to personal room:", userId);
+    clientSocket.emit("user setup", userId);
+
+    // Mark user as online in the database
+    await User.findByIdAndUpdate(userId, { isOnline: true });
+
+    // Notify all active conversation rooms that this user is online
+    const userConversations = await Conversation.find({
+      members: { $in: [userId] },
     });
 
-    conversations.forEach((conversation) => {
-      const sock = io.sockets.adapter.rooms.get(conversation.id);
-      if (sock) {
-        console.log("Other user is online is sent to: ", id);
+    userConversations.forEach((conversation) => {
+      const roomSockets = io.sockets.adapter.rooms.get(conversation.id);
+      if (roomSockets) {
         io.to(conversation.id).emit("receiver-online", {});
       }
     });
   });
 
-  // Join chat room
-  socket.on("join-chat", async (data) => {
-    const { roomId, userId } = data;
+  // ──────────── Chat Room Management ────────────
 
-    console.log("User joined chat room", roomId);
+  /**
+   * Handles joining a chat room — resets unread counter
+   * and notifies other room members.
+   */
+  clientSocket.on("join-chat", async (data) => {
+    const { roomId, userId } = data;
+    console.log("User joining chat room:", roomId);
 
     try {
-      const conv = await Conversation.findById(roomId);
+      const conversationThread = await Conversation.findById(roomId);
 
-      // Check if conversation exists
-      if (!conv) {
-        console.log("Conversation not found:", roomId);
-        socket.emit("conversation-not-found", { roomId });
+      if (!conversationThread) {
+        console.log("Chat room not found:", roomId);
+        clientSocket.emit("conversation-not-found", { roomId });
         return;
       }
 
-      socket.join(roomId);
+      clientSocket.join(roomId);
 
-      // set joined user unread to 0
-      if (conv.unreadCounts && Array.isArray(conv.unreadCounts)) {
-        conv.unreadCounts = conv.unreadCounts.map((unread) => {
-          if (unread.userId == userId) {
-            unread.count = 0;
+      // Reset this user's unread counter for this conversation
+      if (conversationThread.unreadCounts && Array.isArray(conversationThread.unreadCounts)) {
+        conversationThread.unreadCounts = conversationThread.unreadCounts.map((counter) => {
+          if (counter.userId == userId) {
+            counter.count = 0;
           }
-          return unread;
+          return counter;
         });
-        await conv.save({ timestamps: false });
+        await conversationThread.save({ timestamps: false });
       }
 
       io.to(roomId).emit("user-joined-room", userId);
-    } catch (error) {
-      console.error("Error joining chat room:", error);
-      socket.emit("join-chat-error", { roomId, error: error.message });
+    } catch (joinError) {
+      console.error("Error joining chat room:", joinError);
+      clientSocket.emit("join-chat-error", { roomId, error: joinError.message });
     }
   });
 
-  // Leave chat room
-  socket.on("leave-chat", (room) => {
-    socket.leave(room);
+  /** Handles leaving a chat room */
+  clientSocket.on("leave-chat", (roomId) => {
+    clientSocket.leave(roomId);
   });
 
-  const handleSendMessage = async (data) => {
-    console.log("Received message: ");
+  // ──────────── Message Dispatch ────────────
 
-    var isSentToBot = false;
+  /**
+   * Processes outgoing messages — routes to AI bot handler,
+   * group message handler, or direct message handler based on context.
+   */
+  const onMessageDispatch = async (messagePayload) => {
+    console.log("Processing outgoing message");
 
-    const { conversationId, senderId, text, imageUrl } = data;
+    const { conversationId, senderId, text, imageUrl } = messagePayload;
+    let isAiBotConversation = false;
 
     try {
-      const conversation = await Conversation.findById(conversationId).populate(
-        "members"
-      );
+      const conversationThread = await Conversation.findById(conversationId).populate("members");
 
-      // Check if conversation exists
-      if (!conversation) {
+      if (!conversationThread) {
         console.log("Conversation not found:", conversationId);
-        socket.emit("conversation-not-found", { conversationId });
+        clientSocket.emit("conversation-not-found", { conversationId });
         return;
       }
 
-      // processing for AI chatbot
-      conversation.members.forEach(async (member) => {
+      // ── AI Chatbot Detection & Handling ──
+      conversationThread.members.forEach(async (member) => {
         if (member._id != senderId && member.email.endsWith("bot")) {
-          // this member is a bot
-          isSentToBot = true;
-          // send typing event
-          io.to(conversationId).emit("typing", { typer: member._id.toString() });
-          // generating AI response
+          isAiBotConversation = true;
 
-          const mockUserMessage = {
+          // Show typing indicator while AI generates response
+          io.to(conversationId).emit("typing", { typer: member._id.toString() });
+
+          // Immediately echo the user's message to the chat UI
+          const userMessagePreview = {
             id_: Date.now().toString(),
-            conversationId: conversationId,
-            senderId: senderId,
-            text: text,
-            seenBy: [
-              {
-                user: member._id.toString(),
-                seenAt: new Date(),
-              },
-            ],
-            imageUrl: imageUrl,
+            conversationId,
+            senderId,
+            text,
+            seenBy: [{ user: member._id.toString(), seenAt: new Date() }],
+            imageUrl,
             createdAt: new Date(),
             updatedAt: new Date(),
           };
+          io.to(conversationId).emit("receive-message", userMessagePreview);
 
-          io.to(conversationId).emit("receive-message", mockUserMessage);
+          // Generate and send AI response
+          const aiReply = await generateAiChatReply(text, senderId, conversationId);
 
-          const responseMessage = await getAiResponse(
-            text,
-            senderId,
-            conversationId
-          );
+          if (aiReply === -1) return;
 
-          if (responseMessage == -1) {
-            return;
-          }
-
-          io.to(conversationId).emit("receive-message", responseMessage);
-          io.to(conversationId).emit("stop-typing", {
-            typer: member._id.toString(),
-          });
+          io.to(conversationId).emit("receive-message", aiReply);
+          io.to(conversationId).emit("stop-typing", { typer: member._id.toString() });
         }
       });
 
-      if (isSentToBot) {
-        return;
-      }
+      if (isAiBotConversation) return;
 
-      // ===== GROUP CHAT HANDLING =====
-      if (conversation.isGroup) {
-        // Find which members are currently in the chat room
-        const chatRoom = io.sockets.adapter.rooms.get(conversationId);
-        const membersInRoom = [];
+      // ── Group Message Handling ──
+      if (conversationThread.isGroup) {
+        const membersInRoom = getActiveRoomMembers(io, conversationThread.members, conversationId);
 
-        for (const member of conversation.members) {
-          const memberPersonalRoom = io.sockets.adapter.rooms.get(member._id.toString());
-          if (memberPersonalRoom && chatRoom) {
-            const memberSid = Array.from(memberPersonalRoom)[0];
-            if (chatRoom.has(memberSid)) {
-              membersInRoom.push(member._id.toString());
-            }
-          }
-        }
-
-        const message = await sendGroupMessageHandler({
+        const savedGroupMessage = await processGroupMessage({
           text,
           imageUrl,
           senderId,
@@ -165,124 +208,119 @@ module.exports = (io, socket) => {
           membersInRoom,
         });
 
-        io.to(conversationId).emit("receive-message", message);
+        io.to(conversationId).emit("receive-message", savedGroupMessage);
 
-        // Send notifications to members NOT in the room
-        for (const member of conversation.members) {
+        // Send notification to members NOT currently in the room
+        for (const member of conversationThread.members) {
           const memberId = member._id.toString();
           if (memberId !== senderId && !membersInRoom.includes(memberId)) {
-            io.to(memberId).emit("new-message-notification", message);
+            io.to(memberId).emit("new-message-notification", savedGroupMessage);
           }
         }
-
         return;
       }
 
-      // ===== 1-TO-1 CHAT HANDLING =====
-      const receiverId = conversation.members.find(
+      // ── Direct (1-to-1) Message Handling ──
+      const recipientMember = conversationThread.members.find(
         (member) => member._id != senderId
-      )?._id;
-
-      if (!receiverId) {
-        console.log("Receiver not found in conversation");
-        return;
-      }
-
-      const receiverPersonalRoom = io.sockets.adapter.rooms.get(
-        receiverId.toString()
       );
 
-      let isReceiverInsideChatRoom = false;
-
-      if (receiverPersonalRoom) {
-        const receiverSid = Array.from(receiverPersonalRoom)[0];
-        const chatRoom = io.sockets.adapter.rooms.get(conversationId);
-        isReceiverInsideChatRoom = chatRoom ? chatRoom.has(receiverSid) : false;
+      if (!recipientMember) {
+        console.log("Recipient not found in conversation");
+        return;
       }
 
-      const message = await sendMessageHandler({
+      const recipientId = recipientMember._id;
+      const isRecipientViewing = isUserInChatRoom(io, recipientId, conversationId);
+
+      const savedDirectMessage = await processDirectMessage({
         text,
         imageUrl,
         senderId,
         conversationId,
-        receiverId,
-        isReceiverInsideChatRoom,
+        receiverId: recipientId,
+        isReceiverInsideChatRoom: isRecipientViewing,
       });
 
-      io.to(conversationId).emit("receive-message", message);
+      io.to(conversationId).emit("receive-message", savedDirectMessage);
 
-      // sending notification to receiver
-      if (!isReceiverInsideChatRoom) {
-        console.log("Emitting new message to: ", receiverId.toString());
-        io.to(receiverId.toString()).emit("new-message-notification", message);
+      // Send notification if recipient is not viewing this conversation
+      if (!isRecipientViewing) {
+        console.log("Sending notification to:", recipientId.toString());
+        io.to(recipientId.toString()).emit("new-message-notification", savedDirectMessage);
       }
-    } catch (error) {
-      console.error("Error sending message:", error);
-      socket.emit("send-message-error", { error: error.message });
+    } catch (dispatchError) {
+      console.error("Message dispatch error:", dispatchError);
+      clientSocket.emit("send-message-error", { error: dispatchError.message });
     }
   };
 
-  // Send message
-  socket.on("send-message", handleSendMessage);
+  clientSocket.on("send-message", onMessageDispatch);
 
-  const handleDeleteMessage = async (data) => {
+  // ──────────── Message Deletion ────────────
+
+  const onMessageRemoval = async (deletionPayload) => {
     try {
-      const { messageId, deleteFrom, conversationId } = data;
-      const deleted = await deleteMessageHandler({ messageId, deleteFrom });
-      if (deleted && deleteFrom.length > 1) {
-        io.to(conversationId).emit("message-deleted", data);
+      const { messageId, deleteFrom, conversationId } = deletionPayload;
+      const wasDeleted = await handleMessageRemoval({ messageId, deleteFrom });
+
+      // Only broadcast deletion if it was a "delete for everyone" action
+      if (wasDeleted && deleteFrom.length > 1) {
+        io.to(conversationId).emit("message-deleted", deletionPayload);
       }
-    } catch (error) {
-      console.error("Error deleting message:", error);
+    } catch (deleteError) {
+      console.error("Message deletion error:", deleteError);
     }
   };
 
-  // Delete message
-  socket.on("delete-message", handleDeleteMessage);
+  clientSocket.on("delete-message", onMessageRemoval);
 
-  // Typing indicator
-  socket.on("typing", (data) => {
-    io.to(data.conversationId).emit("typing", data);
+  // ──────────── Typing Indicators ────────────
+
+  clientSocket.on("typing", (typingData) => {
+    io.to(typingData.conversationId).emit("typing", typingData);
   });
 
-  // Stop typing indicator
-  socket.on("stop-typing", (data) => {
-    io.to(data.conversationId).emit("stop-typing", data);
+  clientSocket.on("stop-typing", (typingData) => {
+    io.to(typingData.conversationId).emit("stop-typing", typingData);
   });
 
-  // Handle group deletion
-  socket.on("group-deleted", (data) => {
-    const { groupId, members } = data;
-    // Notify all members that the group was deleted
+  // ──────────── Group Lifecycle Events ────────────
+
+  clientSocket.on("group-deleted", (groupData) => {
+    const { groupId, members } = groupData;
     members.forEach((memberId) => {
       io.to(memberId.toString()).emit("group-deleted-notification", { groupId });
     });
   });
 
-  // Disconnect
-  socket.on("disconnect", async () => {
-    console.log("A user disconnected", currentUserId, socket.id);
+  // ──────────── Disconnection Handling ────────────
+
+  clientSocket.on("disconnect", async () => {
+    console.log("User disconnected:", connectedUserId, clientSocket.id);
+
     try {
-      if (currentUserId) {
-        await User.findByIdAndUpdate(currentUserId, {
+      if (connectedUserId) {
+        // Update presence status in database
+        await User.findByIdAndUpdate(connectedUserId, {
           isOnline: false,
           lastSeen: new Date(),
         });
 
-        const conversations = await Conversation.find({
-          members: { $in: [currentUserId] },
+        // Notify active conversation rooms that this user went offline
+        const userConversations = await Conversation.find({
+          members: { $in: [connectedUserId] },
         });
 
-        conversations.forEach((conversation) => {
-          const sock = io.sockets.adapter.rooms.get(conversation.id);
-          if (sock) {
-            console.log("Other user is offline is sent to: ", currentUserId);
+        userConversations.forEach((conversation) => {
+          const roomSockets = io.sockets.adapter.rooms.get(conversation.id);
+          if (roomSockets) {
             io.to(conversation.id).emit("receiver-offline", {});
           }
         });
       }
-    } catch (error) {
-      console.error("Error updating user status on disconnect:", error);
+    } catch (disconnectError) {
+      console.error("Disconnect handling error:", disconnectError);
     }
   });
 };

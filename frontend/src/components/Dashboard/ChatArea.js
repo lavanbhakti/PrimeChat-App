@@ -1,30 +1,34 @@
-import React, { useState, useEffect, useContext } from "react";
-import { ArrowForwardIcon } from "@chakra-ui/icons";
-import Lottie from "react-lottie";
-import animationdata from "../../typingAnimation.json";
+/**
+ * PrimeChat Chat Area Component
+ * 
+ * Displays the active conversation's message history, input field,
+ * typing indicators, and image upload functionality.
+ * Supports markdown rendering, message scrolling, and real-time updates.
+ * 
+ * @module ChatArea
+ */
+
+import React, { useContext, useEffect, useState, useRef } from "react";
 import {
   Box,
-  InputGroup,
+  Flex,
   Input,
-  Text,
-  InputRightElement,
   Button,
-  FormControl,
-  InputLeftElement,
+  Text,
+  Spinner,
+  Image,
+  IconButton,
   useToast,
-  useDisclosure,
 } from "@chakra-ui/react";
-import { FaFileUpload } from "react-icons/fa";
-import { marked } from "marked";
-
-import chatContext from "../../context/chatContext";
+import { ArrowBackIcon, AttachmentIcon, ArrowUpIcon } from "@chakra-ui/icons";
+import primeChatContext from "../../context/chatContext";
 import ChatAreaTop from "./ChatAreaTop";
-import FileUploadModal from "../miscellaneous/FileUploadModal";
-import ChatLoadingSpinner from "../miscellaneous/ChatLoadingSpinner";
-import axios from "axios";
 import SingleMessage from "./SingleMessage";
+import { marked } from "marked";
+import DOMPurify from "dompurify";
 
-const scrollbarconfig = {
+/** Custom scrollbar styling for the message container */
+const customScrollStyles = {
   "&::-webkit-scrollbar": {
     width: "5px",
     height: "5px",
@@ -41,84 +45,49 @@ const scrollbarconfig = {
   },
 };
 
-const markdownToHtml = (markdownText) => {
-  const html = marked(markdownText);
-  return { __html: html };
-};
+/**
+ * Converts markdown text to sanitized HTML for safe rendering.
+ * Used to display code blocks, bold text, links, etc. in chat messages.
+ * 
+ * @param {string} markdownText - Raw markdown string
+ * @returns {{ __html: string }} React-compatible dangerouslySetInnerHTML object
+ */
+function renderMarkdownContent(markdownText) {
+  const rawHtml = marked(markdownText);
+  const cleanHtml = DOMPurify.sanitize(rawHtml);
+  return { __html: cleanHtml };
+}
 
-export const ChatArea = () => {
-  const context = useContext(chatContext);
+const ChatArea = () => {
+  const appContext = useContext(primeChatContext);
   const {
     hostName,
     user,
-    receiver,
     socket,
     activeChatId,
+    setActiveChatId,
     messageList,
     setMessageList,
+    receiver,
+    setReceiver,
+    isChatLoading,
     isOtherUserTyping,
     setIsOtherUserTyping,
-    setActiveChatId,
-    setReceiver,
-    setMyChatList,
     myChatList,
-    isChatLoading,
-  } = context;
-  const [typing, settyping] = useState(false);
+    setMyChatList,
+  } = appContext;
+
   const toast = useToast();
-  const { isOpen, onOpen, onClose } = useDisclosure();
+  const [imagePreview, setImagePreview] = useState(null);
+  const [selectedImageFile, setSelectedImageFile] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
 
-  // Lottie Options for typing
-  const defaultOptions = {
-    loop: true,
-    autoplay: true,
-    animationData: animationdata,
-    rendererSettings: {
-      preserveAspectRatio: "xMidYMid slice",
-    },
-  };
-
+  // Listen for incoming messages and typing events
   useEffect(() => {
-    return () => {
-      window.addEventListener("popstate", () => {
-        socket.emit("leave-chat", activeChatId);
-        setActiveChatId("");
-        setMessageList([]);
-        setReceiver({});
-      });
-    };
-  }, [socket, activeChatId, setActiveChatId, setMessageList, setReceiver]);
+    socket.on("receive-message", (incomingMessage) => {
+      setMessageList((currentMessages) => [...currentMessages, incomingMessage]);
 
-  useEffect(() => {
-    socket.on("user-joined-room", (userId) => {
-      const updatedList = messageList.map((message) => {
-        if (message.senderId === user._id && userId !== user._id) {
-          const index = message.seenBy.findIndex(
-            (seen) => seen.user === userId
-          );
-          if (index === -1) {
-            message.seenBy.push({ user: userId, seenAt: new Date() });
-          }
-        }
-        return message;
-      });
-      setMessageList(updatedList);
-    });
-
-    socket.on("typing", (data) => {
-      if (data.typer !== user._id) {
-        setIsOtherUserTyping(true);
-      }
-    });
-
-    socket.on("stop-typing", (data) => {
-      if (data.typer !== user._id) {
-        setIsOtherUserTyping(false);
-      }
-    });
-
-    socket.on("receive-message", (data) => {
-      setMessageList((prev) => [...prev, data]);
       setTimeout(() => {
         document.getElementById("chat-box")?.scrollTo({
           top: document.getElementById("chat-box").scrollHeight,
@@ -127,335 +96,333 @@ export const ChatArea = () => {
       }, 100);
     });
 
-    socket.on("message-deleted", (data) => {
-      const { messageId } = data;
-      setMessageList((prev) => prev.filter((msg) => msg._id !== messageId));
+    socket.on("typing", (typingPayload) => {
+      if (typingPayload.typer !== user._id) {
+        setIsOtherUserTyping(true);
+      }
+    });
+
+    socket.on("stop-typing", (typingPayload) => {
+      if (typingPayload.typer !== user._id) {
+        setIsOtherUserTyping(false);
+      }
+    });
+
+    socket.on("message-deleted", (deletionData) => {
+      setMessageList((currentMessages) =>
+        currentMessages.filter((msg) => msg._id !== deletionData.messageId)
+      );
     });
 
     return () => {
+      socket.off("receive-message");
       socket.off("typing");
       socket.off("stop-typing");
-      socket.off("receive-message");
       socket.off("message-deleted");
     };
-  }, [socket, messageList, setMessageList, user._id, setIsOtherUserTyping]);
+  }, [socket, setMessageList, setIsOtherUserTyping, user._id]);
 
-  const handleTyping = () => {
-    const messageInput = document.getElementById("new-message");
-    if (!messageInput) return;
+  /**
+   * Removes a message from the displayed message list (for local deletion).
+   */
+  const removeMessageFromList = (messageId) => {
+    setMessageList((currentMessages) =>
+      currentMessages.filter((msg) => msg._id !== messageId)
+    );
+  };
 
-    if (messageInput.value === "" && typing) {
-      settyping(false);
-      socket.emit("stop-typing", {
-        typer: user._id,
-        conversationId: activeChatId,
-      });
-    } else if (messageInput.value !== "" && !typing) {
-      settyping(true);
-      socket.emit("typing", {
-        typer: user._id,
-        conversationId: activeChatId,
-      });
+  /**
+   * Navigates back to the chat list on mobile view.
+   */
+  const goBackToChatList = async () => {
+    await socket.emit("stop-typing", {
+      typer: user._id,
+      conversationId: activeChatId,
+    });
+    await socket.emit("leave-chat", activeChatId);
+    setActiveChatId("");
+    setReceiver({});
+  };
+
+  /**
+   * Handles image file selection for attachment.
+   */
+  const handleImageSelection = (e) => {
+    const chosenFile = e.target.files[0];
+    if (chosenFile) {
+      setSelectedImageFile(chosenFile);
+      setImagePreview(URL.createObjectURL(chosenFile));
     }
   };
 
-  const handleKeyPress = (e) => {
-    if (e.key === "Enter") {
-      handleSendMessage(e);
-    }
-  };
+  /**
+   * Uploads the selected image to S3 using a presigned URL.
+   * @returns {string|null} The public URL of the uploaded image
+   */
+  const uploadImageToS3 = async () => {
+    if (!selectedImageFile) return null;
 
-  const getPreSignedUrl = async (fileName, fileType) => {
-    if (!fileName || !fileType) return;
+    setIsUploading(true);
     try {
-      const response = await fetch(
-        `${hostName}/user/presigned-url?filename=${fileName}&filetype=${fileType}`,
+      // Get presigned URL from server
+      const urlResponse = await fetch(
+        `${hostName}/user/presigned-url?filename=${selectedImageFile.name}&filetype=${selectedImageFile.type}&type=chat`,
         {
           headers: {
-            "Content-Type": "application/json",
             "auth-token": localStorage.getItem("token"),
           },
         }
       );
 
-      if (!response.ok) {
-        throw new Error("Failed to get pre-signed URL");
+      const { url, fields } = await urlResponse.json();
+
+      // Build and submit the S3 upload form
+      const uploadFormData = new FormData();
+      Object.entries(fields).forEach(([key, value]) => {
+        uploadFormData.append(key, value);
+      });
+      uploadFormData.append("file", selectedImageFile);
+
+      const uploadResult = await fetch(url, {
+        method: "POST",
+        body: uploadFormData,
+      });
+
+      if (uploadResult.ok) {
+        const resultXml = await uploadResult.text();
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(resultXml, "text/xml");
+        const publicUrl = xmlDoc.getElementsByTagName("Location")[0].textContent;
+
+        setImagePreview(null);
+        setSelectedImageFile(null);
+        return decodeURIComponent(publicUrl);
       }
-      const data = await response.json();
-      return data;
-    } catch (error) {
+    } catch (uploadError) {
+      console.error("Image upload error:", uploadError);
       toast({
-        title: error.message,
+        title: "Upload failed",
         status: "error",
         duration: 3000,
-        isClosable: true,
       });
+    } finally {
+      setIsUploading(false);
     }
+    return null;
   };
 
-  const handleSendMessage = async (e, messageText, file) => {
-    e.preventDefault();
+  /**
+   * Dispatches a chat message through the WebSocket connection.
+   * Handles both text-only and text+image messages.
+   */
+  const dispatchChatMessage = async () => {
+    const messageInput = document.getElementById("new-message");
+    const messageText = messageInput?.value?.trim();
 
-    if (!messageText) {
-      messageText = document.getElementById("new-message")?.value || "";
+    if (!messageText && !selectedImageFile) return;
+
+    let uploadedImageUrl = null;
+    if (selectedImageFile) {
+      uploadedImageUrl = await uploadImageToS3();
+      if (!uploadedImageUrl && !messageText) return;
     }
 
+    const messagePayload = {
+      text: messageText || undefined,
+      imageUrl: uploadedImageUrl || undefined,
+      senderId: user._id,
+      conversationId: activeChatId,
+    };
+
+    // Emit stop-typing indicator before sending
     socket.emit("stop-typing", {
       typer: user._id,
       conversationId: activeChatId,
     });
 
-    if (messageText === "" && !file) {
-      toast({
-        title: "Message cannot be empty",
-        status: "warning",
-        duration: 3000,
-        isClosable: true,
-      });
+    socket.emit("send-message", messagePayload);
+
+    // Update chat list preview text
+    const previewText = messageText || "📷 Image";
+    const updatedChatList = myChatList.map((chat) => {
+      if (chat._id === activeChatId) {
+        return { ...chat, latestmessage: previewText };
+      }
+      return chat;
+    });
+    setMyChatList(updatedChatList);
+
+    // Clear input and image preview
+    if (messageInput) {
+      messageInput.value = "";
+      messageInput.focus();
+    }
+    setImagePreview(null);
+    setSelectedImageFile(null);
+  };
+
+  /** Debounce timer reference for typing indicator */
+  let typingTimerRef;
+
+  /**
+   * Handles keyboard events in the message input:
+   * - Enter key sends the message
+   * - Other keys emit typing indicator with debounce
+   */
+  const handleKeyboardInput = (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      dispatchChatMessage();
       return;
     }
 
-    let imageUrl = null;
-
-    if (file) {
-      try {
-        // Step 1: Get presigned URL with correct type parameter
-        const response = await fetch(
-          `${hostName}/user/presigned-url?filename=${encodeURIComponent(file.name)}&filetype=${encodeURIComponent(file.type)}&type=chat`,
-          {
-            headers: {
-              "Content-Type": "application/json",
-              "auth-token": localStorage.getItem("token"),
-            },
-          }
-        );
-
-        if (!response.ok) {
-          const errorData = await response.json();
-          throw new Error(errorData.error || "Failed to get upload URL");
-        }
-
-        const { url, fields, key } = await response.json();
-        console.log("Presigned URL received for chat image:", { url, key });
-
-        // Step 2: Upload to S3 with correct FormData order
-        const formData = new FormData();
-
-        // CRITICAL: Append fields in exact order AWS expects
-        Object.entries(fields).forEach(([fieldKey, value]) => {
-          formData.append(fieldKey, value);
-        });
-
-        // File MUST be appended LAST
-        formData.append("file", file);
-
-        // Upload to S3 - DO NOT set Content-Type header
-        const uploadResponse = await axios.post(url, formData);
-
-        console.log("S3 upload response:", uploadResponse.status);
-
-        // AWS S3 can return 200, 201, or 204
-        if (uploadResponse.status < 200 || uploadResponse.status >= 300) {
-          throw new Error("Failed to upload file to S3");
-        }
-
-        // Step 3: Construct the final image URL
-        imageUrl = `${url}${url.endsWith('/') ? '' : '/'}${key}`;
-
-        console.log("Chat image uploaded successfully:", imageUrl);
-      } catch (error) {
-        console.error("Error uploading file:", error);
-        toast({
-          title: "Upload failed",
-          description: error.message || "Failed to upload image",
-          status: "error",
-          duration: 3000,
-          isClosable: true,
-        });
-        return;
-      }
-    }
-
-    const data = {
-      text: messageText,
+    socket.emit("typing", {
+      typer: user._id,
       conversationId: activeChatId,
-      senderId: user._id,
-      imageUrl: imageUrl,
-    };
+    });
 
-    socket.emit("send-message", data);
-
-    const inputElem = document.getElementById("new-message");
-    if (inputElem) {
-      inputElem.value = "";
-    }
-
-    setTimeout(() => {
-      document.getElementById("chat-box")?.scrollTo({
-        top: document.getElementById("chat-box").scrollHeight,
-        behavior: "smooth",
+    clearTimeout(typingTimerRef);
+    typingTimerRef = setTimeout(() => {
+      socket.emit("stop-typing", {
+        typer: user._id,
+        conversationId: activeChatId,
       });
-    }, 100);
+    }, 1500);
+  };
 
-    setMyChatList(
-      await myChatList
-        .map((chat) => {
-          if (chat._id === activeChatId) {
-            chat.latestmessage = messageText || (imageUrl ? "📷 Image" : "");
-            chat.updatedAt = new Date().toUTCString();
-          }
-          return chat;
-        })
-        .sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+  // ── Render: No active chat selected ──
+  if (!activeChatId) {
+    return (
+      <Box
+        display={{ base: "none", md: "flex" }}
+        h="100%"
+        justifyContent="center"
+        alignItems="center"
+      >
+        <Text fontSize="2xl" fontWeight="bold" color="gray.400">
+          Select a conversation to start chatting
+        </Text>
+      </Box>
     );
-  };
+  }
 
-  const removeMessageFromList = (messageId) => {
-    setMessageList((prev) => prev.filter((msg) => msg._id !== messageId));
-  };
+  // ── Render: Chat loading state ──
+  if (isChatLoading) {
+    return (
+      <Box
+        h="100%"
+        display="flex"
+        justifyContent="center"
+        alignItems="center"
+      >
+        <Spinner size="xl" color="purple.400" />
+      </Box>
+    );
+  }
 
+  // ── Render: Active chat view ──
   return (
-    <>
-      {activeChatId !== "" ? (
-        <>
-          <Box
-            display="flex"
-            flexDirection="column"
-            h="100%"
-            w={{
-              base: "100vw",
-              md: "100%",
-            }}
-            overflow="hidden"
-          >
-            <ChatAreaTop />
+    <Flex direction="column" h="100%" w="100%">
+      {/* Chat Header */}
+      <Flex
+        p={2}
+        borderBottomWidth="1px"
+        align="center"
+        flexShrink={0}
+      >
+        <ChatAreaTop onBackClick={goBackToChatList} />
+      </Flex>
 
-            {isChatLoading && <ChatLoadingSpinner />}
-
-            <Box
-              id="chat-box"
-              flex={1}
-              overflowY="auto"
-              sx={scrollbarconfig}
-              mt={1}
-              mx={1}
-              pb={2}
-            >
-              {messageList?.map((message) =>
-                !message.deletedby?.includes(user._id) ? (
-                  <SingleMessage
-                    key={message._id}
-                    message={message}
-                    user={user}
-                    receiver={receiver}
-                    markdownToHtml={markdownToHtml}
-                    scrollbarconfig={scrollbarconfig}
-                    socket={socket}
-                    activeChatId={activeChatId}
-                    removeMessageFromList={removeMessageFromList}
-                    toast={toast}
-                  />
-                ) : null
-              )}
-            </Box>
-
-            {/* Message input - positioned at bottom of flex container, NOT fixed */}
-            <Box
-              py={2}
-              px={1}
-              borderTopWidth="1px"
-              borderTopColor="gray.600"
-              flexShrink={0}
-              bg={
-                localStorage.getItem("chakra-ui-color-mode") === "dark"
-                  ? "#1a202c"
-                  : "white"
-              }
-            >
-              <Box mx={1} w="fit-content">
-                {isOtherUserTyping && (
-                  <Lottie
-                    options={defaultOptions}
-                    height={20}
-                    width={20}
-                    isStopped={false}
-                    isPaused={false}
-                  />
-                )}
-              </Box>
-              <FormControl>
-                <InputGroup
-                  w="100%"
-                  m="auto"
-                  onKeyDown={handleKeyPress}
-                >
-                  {!receiver?.email?.includes("bot") && (
-                    <InputLeftElement>
-                      <Button
-                        mx={2}
-                        size="sm"
-                        onClick={onOpen}
-                        borderRadius="lg"
-                      >
-                        <FaFileUpload />
-                      </Button>
-                    </InputLeftElement>
-                  )}
-
-                  <Input
-                    placeholder="Type a message"
-                    id="new-message"
-                    onChange={handleTyping}
-                    borderRadius="10px"
-                  />
-
-                  <InputRightElement>
-                    <Button
-                      onClick={(e) =>
-                        handleSendMessage(
-                          e,
-                          document.getElementById("new-message")?.value
-                        )
-                      }
-                      size="sm"
-                      mx={2}
-                      borderRadius="10px"
-                    >
-                      <ArrowForwardIcon />
-                    </Button>
-                  </InputRightElement>
-                </InputGroup>
-              </FormControl>
-            </Box>
-          </Box>
-          <FileUploadModal
-            isOpen={isOpen}
-            onClose={onClose}
-            handleSendMessage={handleSendMessage}
+      {/* Message List */}
+      <Box
+        id="chat-box"
+        flex={1}
+        overflowY="auto"
+        px={2}
+        py={1}
+        sx={customScrollStyles}
+      >
+        {messageList.map((message, idx) => (
+          <SingleMessage
+            key={message._id || idx}
+            message={message}
+            user={user}
+            receiver={receiver}
+            markdownToHtml={renderMarkdownContent}
+            scrollbarconfig={customScrollStyles}
+            socket={socket}
+            activeChatId={activeChatId}
+            removeMessageFromList={removeMessageFromList}
+            toast={toast}
           />
-        </>
-      ) : (
-        !isChatLoading && (
-          <Box
-            display={{
-              base: "none",
-              md: "flex",
-            }}
-            flexDirection="column"
-            alignItems="center"
-            justifyContent="center"
-            h="100%"
-            w="100%"
-            textAlign="center"
-          >
-            <Text fontSize="4xl" fontWeight="bold" fontFamily="Work sans">
-              PrimeChat
-            </Text>
-            <Text fontSize="lg" color="gray.500">Secure Communication Platform</Text>
-            <Text fontSize="md" color="gray.400" mt={2}>Select a chat to start messaging</Text>
-          </Box>
-        )
+        ))}
+
+        {isOtherUserTyping && (
+          <Text fontSize="sm" color="gray.400" ml={2} mt={1}>
+            typing...
+          </Text>
+        )}
+      </Box>
+
+      {/* Image Preview */}
+      {imagePreview && (
+        <Box px={4} py={2} borderTopWidth="1px">
+          <Flex align="center" gap={2}>
+            <Image
+              src={imagePreview}
+              maxH="100px"
+              borderRadius="md"
+              alt="Selected attachment"
+            />
+            <Button
+              size="sm"
+              colorScheme="red"
+              variant="ghost"
+              onClick={() => {
+                setImagePreview(null);
+                setSelectedImageFile(null);
+              }}
+            >
+              Remove
+            </Button>
+          </Flex>
+        </Box>
       )}
-    </>
+
+      {/* Message Input */}
+      <Flex p={2} borderTopWidth="1px" align="center" gap={2} flexShrink={0}>
+        <IconButton
+          icon={<AttachmentIcon />}
+          onClick={() => fileInputRef.current?.click()}
+          aria-label="Attach image"
+          variant="ghost"
+          isLoading={isUploading}
+        />
+        <input
+          type="file"
+          accept="image/*"
+          ref={fileInputRef}
+          style={{ display: "none" }}
+          onChange={handleImageSelection}
+        />
+        <Input
+          id="new-message"
+          placeholder="Type a message..."
+          onKeyDown={handleKeyboardInput}
+          flex={1}
+          autoComplete="off"
+        />
+        <IconButton
+          icon={<ArrowUpIcon />}
+          colorScheme="purple"
+          onClick={dispatchChatMessage}
+          aria-label="Send message"
+          isLoading={isUploading}
+          borderRadius="full"
+        />
+      </Flex>
+    </Flex>
   );
 };
+
+export default ChatArea;

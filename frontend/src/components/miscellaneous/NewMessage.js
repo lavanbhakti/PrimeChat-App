@@ -1,3 +1,13 @@
+/**
+ * PrimeChat New Message Notification Toast
+ * 
+ * Renders a notification card shown as a toast when a new message
+ * arrives in a non-active conversation. Displays sender info,
+ * message preview, and a button to open the conversation.
+ * 
+ * @module NewMessageNotification
+ */
+
 import React from "react";
 import {
   Box,

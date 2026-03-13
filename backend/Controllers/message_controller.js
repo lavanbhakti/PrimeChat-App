@@ -1,8 +1,21 @@
+/**
+ * PrimeChat Message Controller
+ * 
+ * Handles all message-related operations: fetching conversation history,
+ * message deletion, S3 presigned URL generation for file uploads,
+ * Gemini AI chatbot responses, and message creation for both
+ * direct and group conversations.
+ * 
+ * @module MessageController
+ */
+
 const Message = require("../Models/Message.js");
 const Conversation = require("../Models/Conversation.js");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const dotenv = require("dotenv");
+
 dotenv.config({ path: "./.env" });
+
 const {
   AWS_BUCKET_NAME,
   AWS_SECRET,
@@ -12,179 +25,207 @@ const {
 const { S3Client } = require("@aws-sdk/client-s3");
 const { createPresignedPost } = require("@aws-sdk/s3-presigned-post");
 
-const configuration = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const modelId = GEMINI_MODEL;
-const model = configuration.getGenerativeModel({ model: modelId });
+/** Initialize the Gemini AI client for chatbot functionality */
+const geminiClient = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const aiModel = geminiClient.getGenerativeModel({ model: GEMINI_MODEL });
 
-const allMessage = async (req, res) => {
-  try {
-    const messages = await Message.find({
-      conversationId: req.params.id,
-      deletedFrom: { $ne: req.user.id },
-    });
+/** Allowed MIME types for file uploads via S3 presigned URLs */
+const PERMITTED_FILE_TYPES = [
+  "image/jpeg",
+  "image/png",
+  "image/jpg",
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/zip",
+];
 
-    messages.forEach(async (message) => {
-      let isUserAddedToSeenBy = false;
-      message.seenBy.forEach((element) => {
-        if (element.user == req.user.id) {
-          isUserAddedToSeenBy = true;
-        }
-      });
-      if (!isUserAddedToSeenBy) {
-        message.seenBy.push({ user: req.user.id });
-      }
-      await message.save();
-    });
-
-    res.json(messages);
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
-  }
-};
-
-const deletemesage = async (req, res) => {
-  const msgid = req.body.messageid;
-  const userids = req.body.userids;
-  try {
-    const message = await Message.findById(msgid);
-
-    userids.forEach(async (userid) => {
-      if (!message.deletedby.includes(userid)) {
-        message.deletedby.push(userid);
-      }
-    });
-    await message.save();
-    res.status(200).send("Message deleted successfully");
-  } catch (error) {
-    console.log(error.message);
-    res.status(500).send({ error: "Internal Server Error" });
-  }
-};
-
-const getPresignedUrl = async (req, res) => {
-  const filename = req.query.filename;
-  const filetype = req.query.filetype;
-
-  if (!filename || !filetype) {
-    return res
-      .status(400)
-      .json({ error: "Filename and filetype are required" });
-  }
-
-  const validFileTypes = [
-    "image/jpeg",
-    "image/png",
-    "image/jpg",
-    "application/pdf",
-    "application/msword",
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "application/vnd.ms-excel",
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "application/vnd.ms-powerpoint",
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-    "application/zip",
-  ];
-
-  if (!validFileTypes.includes(filetype)) {
-    return res.status(400).json({ error: "Invalid file type" });
-  }
-
-  const userId = req.user.id;
-  const s3Client = new S3Client({
+/**
+ * Creates a configured AWS S3 client instance.
+ * @returns {S3Client} Configured S3 client
+ */
+function createS3Instance() {
+  return new S3Client({
     credentials: {
       accessKeyId: AWS_ACCESS_KEY,
       secretAccessKey: AWS_SECRET,
     },
     region: process.env.AWS_REGION || "eu-north-1",
   });
+}
+
+/**
+ * GET /message/:id/:userid
+ * Fetches all messages in a conversation, excluding those soft-deleted
+ * by the requesting user. Also marks all messages as seen by the user.
+ */
+const fetchConversationMessages = async (req, res) => {
+  try {
+    const conversationMessages = await Message.find({
+      conversationId: req.params.id,
+      deletedFrom: { $ne: req.user.id },
+    });
+
+    // Mark each message as read by the current user
+    conversationMessages.forEach(async (msg) => {
+      const alreadySeen = msg.seenBy.some(
+        (entry) => entry.user == req.user.id
+      );
+      if (!alreadySeen) {
+        msg.seenBy.push({ user: req.user.id });
+      }
+      await msg.save();
+    });
+
+    return res.json(conversationMessages);
+  } catch (fetchError) {
+    console.error("Message fetch error:", fetchError.message);
+    return res.status(500).send("Internal Server Error");
+  }
+};
+
+/**
+ * POST /message/delete
+ * Soft-deletes a message for specified users by adding their IDs
+ * to the message's deletedby array.
+ */
+const markMessageAsDeleted = async (req, res) => {
+  const targetMessageId = req.body.messageid;
+  const affectedUserIds = req.body.userids;
 
   try {
-    const { url, fields } = await createPresignedPost(s3Client, {
+    const targetMessage = await Message.findById(targetMessageId);
+
+    affectedUserIds.forEach(async (userId) => {
+      if (!targetMessage.deletedby.includes(userId)) {
+        targetMessage.deletedby.push(userId);
+      }
+    });
+
+    await targetMessage.save();
+    return res.status(200).send("Message deleted successfully");
+  } catch (deleteError) {
+    console.log("Message deletion error:", deleteError.message);
+    return res.status(500).send({ error: "Internal Server Error" });
+  }
+};
+
+/**
+ * GET /message/presigned-url
+ * Generates a presigned S3 POST URL for secure client-side file uploads.
+ * Validates file type against permitted MIME types and enforces 5MB size limit.
+ */
+const generateFileUploadUrl = async (req, res) => {
+  const fileName = req.query.filename;
+  const fileType = req.query.filetype;
+
+  if (!fileName || !fileType) {
+    return res.status(400).json({ error: "Filename and filetype are required" });
+  }
+
+  if (!PERMITTED_FILE_TYPES.includes(fileType)) {
+    return res.status(400).json({ error: "Unsupported file type" });
+  }
+
+  const uploaderId = req.user.id;
+  const s3 = createS3Instance();
+
+  try {
+    const uploadKey = `primechat/${uploaderId}/${Math.random()}/${fileName}`;
+
+    const { url, fields } = await createPresignedPost(s3, {
       Bucket: AWS_BUCKET_NAME,
-      Key: `conversa/${userId}/${Math.random()}/${filename}`,
+      Key: uploadKey,
       Conditions: [["content-length-range", 0, 5 * 1024 * 1024]],
-      Fields: {
-        success_action_status: "201",
-      },
+      Fields: { success_action_status: "201" },
       Expires: 15 * 60,
     });
 
     return res.status(200).json({ url, fields });
-  } catch (error) {
-    return res.status(500).json({ error: error.message });
+  } catch (s3Error) {
+    return res.status(500).json({ error: s3Error.message });
   }
 };
 
-const getAiResponse = async (prompt, senderId, conversationId) => {
-  var currentMessages = [];
-  const conv = await Conversation.findById(conversationId);
-  const botId = conv.members.find((member) => member != senderId);
+/**
+ * Generates an AI chatbot response using Google Gemini.
+ * Loads the last 20 messages as conversation context, sends the
+ * user's prompt, and stores both the user message and bot reply.
+ * 
+ * @param {string} userPrompt - The user's message text
+ * @param {string} senderId - ID of the user who sent the message
+ * @param {string} conversationId - ID of the bot conversation
+ * @returns {object|number} The saved bot message document, or -1 on empty response
+ */
+const generateAiChatReply = async (userPrompt, senderId, conversationId) => {
+  const chatThread = await Conversation.findById(conversationId);
+  const botUserId = chatThread.members.find((member) => member != senderId);
 
-  const messagelist = await Message.find({
-    conversationId: conversationId,
-  })
+  // Build conversation history from recent messages
+  const recentMessages = await Message.find({ conversationId })
     .sort({ createdAt: -1 })
     .limit(20);
 
-  messagelist.forEach((message) => {
-    if (message.senderId == senderId) {
-      currentMessages.push({
-        role: "user",
-        parts: message.text,
-      });
-    } else {
-      currentMessages.push({
-        role: "model",
-        parts: message.text,
-      });
-    }
-  });
-
-  // reverse currentMessages
-  currentMessages = currentMessages.reverse();
+  const chatHistory = recentMessages
+    .map((msg) => ({
+      role: msg.senderId == senderId ? "user" : "model",
+      parts: msg.text,
+    }))
+    .reverse();
 
   try {
-    const chat = model.startChat({
-      history: currentMessages,
-      generationConfig: {
-        maxOutputTokens: 2000,
-      },
+    const chatSession = aiModel.startChat({
+      history: chatHistory,
+      generationConfig: { maxOutputTokens: 2000 },
     });
 
-    const result = await chat.sendMessage(prompt);
-    const response = result.response;
-    var responseText = response.text();
+    const aiResult = await chatSession.sendMessage(userPrompt);
+    const aiResponse = aiResult.response;
+    let replyText = aiResponse.text();
 
-    if (responseText.length < 1) {
-      responseText = "Woops!! thats soo long ask me something in short.";
+    if (replyText.length < 1) {
+      replyText = "That was too long — try asking something shorter!";
       return -1;
     }
 
+    // Persist the user's original message
     await Message.create({
-      conversationId: conversationId,
-      senderId: senderId,
-      text: prompt,
-      seenBy: [{ user: botId, seenAt: new Date() }],
+      conversationId,
+      senderId,
+      text: userPrompt,
+      seenBy: [{ user: botUserId, seenAt: new Date() }],
     });
 
-    const botMessage = await Message.create({
-      conversationId: conversationId,
-      senderId: botId,
-      text: responseText,
+    // Persist the bot's reply
+    const botReplyMessage = await Message.create({
+      conversationId,
+      senderId: botUserId,
+      text: replyText,
     });
 
-    conv.latestmessage = responseText;
-    await conv.save();
+    chatThread.latestmessage = replyText;
+    await chatThread.save();
 
-    return botMessage;
-  } catch (error) {
-    console.log(error.message);
-    return "some error occured while generating response";
+    return botReplyMessage;
+  } catch (aiError) {
+    console.log("AI response generation error:", aiError.message);
+    return "An error occurred while generating the AI response";
   }
 };
 
-const sendMessageHandler = async (data) => {
+/**
+ * Processes and stores a direct (1-to-1) message.
+ * Handles read receipt logic based on whether the receiver is
+ * currently viewing the conversation.
+ * 
+ * @param {object} messageData - Message payload from the socket event
+ * @returns {object} The saved message document
+ */
+const processDirectMessage = async (messageData) => {
   const {
     text,
     imageUrl,
@@ -192,12 +233,14 @@ const sendMessageHandler = async (data) => {
     conversationId,
     receiverId,
     isReceiverInsideChatRoom,
-  } = data;
-  const conversation = await Conversation.findById(conversationId);
-  const latestMsg = text || (imageUrl ? "📷 Image" : "");
+  } = messageData;
+
+  const conversationThread = await Conversation.findById(conversationId);
+  const previewText = text || (imageUrl ? "📷 Image" : "");
 
   if (!isReceiverInsideChatRoom) {
-    const message = await Message.create({
+    // Receiver is not viewing this chat — create unread message
+    const savedMessage = await Message.create({
       conversationId,
       senderId,
       text: text || undefined,
@@ -205,104 +248,103 @@ const sendMessageHandler = async (data) => {
       seenBy: [],
     });
 
-    // update conversation latest message and increment unread count of receiver by 1
-    conversation.latestmessage = latestMsg;
-    conversation.unreadCounts.map((unread) => {
-      if (unread.userId.toString() == receiverId.toString()) {
-        unread.count += 1;
+    conversationThread.latestmessage = previewText;
+    conversationThread.unreadCounts.map((counter) => {
+      if (counter.userId.toString() == receiverId.toString()) {
+        counter.count += 1;
       }
     });
-    await conversation.save();
-    return message;
+    await conversationThread.save();
+    return savedMessage;
   } else {
-    // create new message with seenby receiver
-    const message = await Message.create({
+    // Receiver is actively viewing — mark as immediately seen
+    const savedMessage = await Message.create({
       conversationId,
       senderId,
       text: text || undefined,
       imageUrl: imageUrl || undefined,
-      seenBy: [
-        {
-          user: receiverId,
-          seenAt: new Date(),
-        },
-      ],
+      seenBy: [{ user: receiverId, seenAt: new Date() }],
     });
-    conversation.latestmessage = latestMsg;
-    await conversation.save();
-    return message;
+
+    conversationThread.latestmessage = previewText;
+    await conversationThread.save();
+    return savedMessage;
   }
 };
 
-const sendGroupMessageHandler = async (data) => {
-  const {
-    text,
-    imageUrl,
-    senderId,
-    conversationId,
-    membersInRoom,
-  } = data;
+/**
+ * Processes and stores a group message.
+ * Builds read receipts from members currently in the chat room
+ * and increments unread counters for absent members.
+ * 
+ * @param {object} messageData - Message payload including membersInRoom
+ * @returns {object} The saved message document
+ */
+const processGroupMessage = async (messageData) => {
+  const { text, imageUrl, senderId, conversationId, membersInRoom } = messageData;
+  const conversationThread = await Conversation.findById(conversationId);
+  const previewText = text || (imageUrl ? "📷 Image" : "");
 
-  const conversation = await Conversation.findById(conversationId);
-  const latestMsg = text || (imageUrl ? "📷 Image" : "");
-
-  // Build seenBy from members currently in the room (excluding sender)
-  const seenBy = membersInRoom
+  // Build seen-by list from members currently viewing the conversation
+  const readReceipts = membersInRoom
     .filter((id) => id !== senderId)
     .map((id) => ({ user: id, seenAt: new Date() }));
 
-  const message = await Message.create({
+  const savedMessage = await Message.create({
     conversationId,
     senderId,
     text: text || undefined,
     imageUrl: imageUrl || undefined,
-    seenBy,
+    seenBy: readReceipts,
   });
 
-  // Update conversation latest message
-  conversation.latestmessage = latestMsg;
+  conversationThread.latestmessage = previewText;
 
-  // Increment unread count for members NOT in the room
-  conversation.unreadCounts.map((unread) => {
-    const uid = unread.userId.toString();
-    if (uid !== senderId && !membersInRoom.includes(uid)) {
-      unread.count += 1;
+  // Increment unread count for members NOT currently in the chat room
+  conversationThread.unreadCounts.map((counter) => {
+    const memberId = counter.userId.toString();
+    if (memberId !== senderId && !membersInRoom.includes(memberId)) {
+      counter.count += 1;
     }
   });
 
-  await conversation.save();
-  return message;
+  await conversationThread.save();
+  return savedMessage;
 };
 
-const deleteMessageHandler = async (data) => {
+/**
+ * Handles soft-deletion of a message for specified users.
+ * Used by the socket event handler for real-time deletion.
+ * 
+ * @param {object} data - Contains messageId and deleteFrom user IDs
+ * @returns {boolean} Success status
+ */
+const handleMessageRemoval = async (data) => {
   const { messageId, deleteFrom } = data;
-  const message = await Message.findById(messageId);
+  const targetMessage = await Message.findById(messageId);
 
-  if (!message) {
-    return false;
-  }
+  if (!targetMessage) return false;
 
   try {
     deleteFrom.forEach(async (userId) => {
-      if (!message.deletedFrom.includes(userId)) {
-        message.deletedFrom.push(userId);
+      if (!targetMessage.deletedFrom.includes(userId)) {
+        targetMessage.deletedFrom.push(userId);
       }
     });
-    await message.save();
-
+    await targetMessage.save();
     return true;
-  } catch (error) {
-    console.log(error.message);
+  } catch (removalError) {
+    console.log("Message removal error:", removalError.message);
     return false;
   }
 };
 
 module.exports = {
-  allMessage,
-  getPresignedUrl,
-  getAiResponse,
-  deletemesage,
-  sendMessageHandler,
-  sendGroupMessageHandler,
-  deleteMessageHandler,
+  fetchConversationMessages,
+  generateFileUploadUrl,
+  generateAiChatReply,
+  markMessageAsDeleted,
+  processDirectMessage,
+  processGroupMessage,
+  handleMessageRemoval,
 };

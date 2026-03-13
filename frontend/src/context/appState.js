@@ -1,122 +1,156 @@
-import chatContext from "./chatContext";
+/**
+ * PrimeChat Global State Provider
+ * 
+ * Manages all application-wide state including authentication,
+ * user profile, conversation list, active chat, messages,
+ * and WebSocket connectivity. Wraps the entire app via React Context.
+ * 
+ * @module PrimeChatProvider
+ */
+
+import primeChatContext from "./chatContext";
 import { useState, useEffect } from "react";
 import io from "socket.io-client";
 
-const hostName = process.env.REACT_APP_API_URL || "http://localhost:5500";
-var socket = io(hostName);
+/** Base URL for all API requests — falls back to localhost for development */
+const apiBaseUrl = process.env.REACT_APP_API_URL || "http://localhost:5500";
 
-const ChatState = (props) => {
+/** Persistent WebSocket connection to the PrimeChat server */
+var socketConnection = io(apiBaseUrl);
+
+/**
+ * PrimeChatProvider - Root state management component.
+ * Provides authentication state, conversation data, and socket
+ * connection to all child components via React Context.
+ */
+const PrimeChatProvider = (props) => {
   const [isAuthenticated, setIsAuthenticated] = useState(
     localStorage.getItem("token") ? true : false
   );
-  const [user, setUser] = useState(localStorage.getItem("user") || {});
-  const [receiver, setReceiver] = useState({});
+  const [currentUser, setCurrentUser] = useState(localStorage.getItem("user") || {});
+  const [activeRecipient, setActiveRecipient] = useState({});
   const [messageList, setMessageList] = useState([]);
   const [activeChatId, setActiveChatId] = useState("");
-  const [myChatList, setMyChatList] = useState([]);
-  const [originalChatList, setOriginalChatList] = useState([]);
+  const [conversationList, setConversationList] = useState([]);
+  const [originalConversationList, setOriginalConversationList] = useState([]);
   const [isOtherUserTyping, setIsOtherUserTyping] = useState(false);
   const [isChatLoading, setIsChatLoading] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isAppLoading, setIsAppLoading] = useState(true);
 
-  const fetchData = async () => {
+  /**
+   * Fetches the user's conversation list from the server.
+   * Called on initial load and after creating new conversations.
+   */
+  const loadConversationList = async () => {
     try {
-      const response = await fetch(`${hostName}/conversation/`, {
+      const response = await fetch(`${apiBaseUrl}/conversation/`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
           "auth-token": localStorage.getItem("token"),
         },
       });
+
       if (!response.ok) {
-        throw new Error("Failed to fetch data" + (await response.text()));
+        throw new Error("Failed to load conversations: " + (await response.text()));
       }
-      const jsonData = await response.json();
-      setMyChatList(jsonData);
-      setIsLoading(false);
-      setOriginalChatList(jsonData);
-    } catch (error) {
-      console.log(error);
+
+      const conversationData = await response.json();
+      setConversationList(conversationData);
+      setOriginalConversationList(conversationData);
+    } catch (fetchError) {
+      console.log("Conversation list error:", fetchError);
+    } finally {
+      setIsAppLoading(false);
     }
   };
 
+  // Listen for real-time online/offline presence updates
   useEffect(() => {
-    socket.on("receiver-online", () => {
-      setReceiver((prevReceiver) => ({ ...prevReceiver, isOnline: true }));
+    socketConnection.on("receiver-online", () => {
+      setActiveRecipient((prev) => ({ ...prev, isOnline: true }));
     });
   }, []);
 
   useEffect(() => {
-    socket.on("receiver-offline", () => {
-      setReceiver((prevReceiver) => ({
-        ...prevReceiver,
+    socketConnection.on("receiver-offline", () => {
+      setActiveRecipient((prev) => ({
+        ...prev,
         isOnline: false,
         lastSeen: new Date().toISOString(),
       }));
     });
   }, []);
 
+  // Restore user session from stored token on app startup
   useEffect(() => {
-    const fetchUser = async () => {
+    const restoreUserSession = async () => {
       try {
-        const token = localStorage.getItem("token");
-        if (token) {
-          const res = await fetch(`${hostName}/auth/me`, {
+        const storedToken = localStorage.getItem("token");
+        if (storedToken) {
+          const sessionResponse = await fetch(`${apiBaseUrl}/auth/me`, {
             method: "GET",
             headers: {
               "Content-Type": "application/json",
-              "auth-token": token,
+              "auth-token": storedToken,
             },
           });
-          const data = await res.json();
-          setUser(data);
-          console.log("user fetched");
+
+          if (!sessionResponse.ok) {
+            throw new Error("Session expired or invalid token");
+          }
+
+          const userData = await sessionResponse.json();
+          setCurrentUser(userData);
+          console.log("User session restored");
           setIsAuthenticated(true);
-          socket.emit("setup", await data._id);
+          socketConnection.emit("setup", await userData._id);
+        } else {
+          setIsAppLoading(false);
         }
-      } catch (error) {
-        console.log(error);
+      } catch (sessionError) {
+        console.log("Session restore error:", sessionError);
         setIsAuthenticated(false);
-        setUser({});
+        setCurrentUser({});
         localStorage.removeItem("token");
         localStorage.removeItem("user");
       }
     };
 
-    fetchUser();
-    fetchData();
+    restoreUserSession();
+    loadConversationList();
   }, []);
 
   return (
-    <chatContext.Provider
+    <primeChatContext.Provider
       value={{
         isAuthenticated,
         setIsAuthenticated,
-        user,
-        setUser,
-        receiver,
-        setReceiver,
+        user: currentUser,
+        setUser: setCurrentUser,
+        receiver: activeRecipient,
+        setReceiver: setActiveRecipient,
         messageList,
         setMessageList,
         activeChatId,
         setActiveChatId,
-        myChatList,
-        setMyChatList,
-        originalChatList,
-        fetchData,
-        hostName,
-        socket,
+        myChatList: conversationList,
+        setMyChatList: setConversationList,
+        originalChatList: originalConversationList,
+        fetchData: loadConversationList,
+        hostName: apiBaseUrl,
+        socket: socketConnection,
         isOtherUserTyping,
         setIsOtherUserTyping,
         isChatLoading,
         setIsChatLoading,
-        isLoading,
-        setIsLoading,
+        isLoading: isAppLoading,
+        setIsLoading: setIsAppLoading,
       }}
     >
       {props.children}
-    </chatContext.Provider>
+    </primeChatContext.Provider>
   );
 };
 
-export default ChatState;
+export default PrimeChatProvider;

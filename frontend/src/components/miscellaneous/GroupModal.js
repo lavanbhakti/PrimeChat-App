@@ -1,3 +1,13 @@
+/**
+ * PrimeChat Group Creation Modal
+ * 
+ * Provides a dialog for creating new group conversations.
+ * Users can name the group and select members from the full user list.
+ * Requires at least one member selected and a group name to proceed.
+ * 
+ * @module GroupCreationModal
+ */
+
 import React, { useState } from "react";
 import {
   Modal,
@@ -20,19 +30,27 @@ import {
 
 const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myChatList, setReceiver, setActiveChatId, socket }) => {
   const [groupName, setGroupName] = useState("");
-  const [selectedUsers, setSelectedUsers] = useState([]);
-  const [isCreating, setIsCreating] = useState(false);
+  const [selectedMemberIds, setSelectedMemberIds] = useState([]);
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const toast = useToast();
 
-  const handleUserToggle = (userId) => {
-    if (selectedUsers.includes(userId)) {
-      setSelectedUsers(selectedUsers.filter((id) => id !== userId));
+  /**
+   * Toggles a user's selection status for group membership.
+   * @param {string} memberId - The user ID to toggle
+   */
+  const toggleMemberSelection = (memberId) => {
+    if (selectedMemberIds.includes(memberId)) {
+      setSelectedMemberIds(selectedMemberIds.filter((id) => id !== memberId));
     } else {
-      setSelectedUsers([...selectedUsers, userId]);
+      setSelectedMemberIds([...selectedMemberIds, memberId]);
     }
   };
 
-  const handleCreateGroup = async () => {
+  /**
+   * Creates a new group conversation with the selected members.
+   * Joins the socket room and adds the group to the chat list.
+   */
+  const submitGroupCreation = async () => {
     if (!groupName.trim()) {
       toast({
         title: "Group name is required",
@@ -43,7 +61,7 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
       return;
     }
 
-    if (selectedUsers.length < 1) {
+    if (selectedMemberIds.length < 1) {
       toast({
         title: "Please select at least one member",
         status: "warning",
@@ -53,10 +71,10 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
       return;
     }
 
-    setIsCreating(true);
+    setIsSubmitting(true);
     try {
-      const payload = {
-        members: [user._id, ...selectedUsers],
+      const groupPayload = {
+        members: [user._id, ...selectedMemberIds],
         isGroup: true,
         name: groupName,
       };
@@ -67,23 +85,21 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
           "Content-Type": "application/json",
           "auth-token": localStorage.getItem("token"),
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(groupPayload),
       });
 
       if (!response.ok) {
         throw new Error("Failed to create group");
       }
 
-      const data = await response.json();
+      const newGroup = await response.json();
 
-      // Add to chat list
-      setMyChatList([data, ...myChatList]);
-      setReceiver(data);
-      setActiveChatId(data._id);
+      setMyChatList([newGroup, ...myChatList]);
+      setReceiver(newGroup);
+      setActiveChatId(newGroup._id);
 
-      // Join the room
       socket.emit("join-chat", {
-        roomId: data._id,
+        roomId: newGroup._id,
         userId: user._id,
       });
 
@@ -94,32 +110,34 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
         isClosable: true,
       });
 
-      // Reset and close
       setGroupName("");
-      setSelectedUsers([]);
+      setSelectedMemberIds([]);
       onClose();
-    } catch (error) {
-      console.error(error);
+    } catch (creationError) {
+      console.error(creationError);
       toast({
         title: "Error creating group",
-        description: error.message,
+        description: creationError.message,
         status: "error",
         duration: 3000,
         isClosable: true,
       });
     } finally {
-      setIsCreating(false);
+      setIsSubmitting(false);
     }
   };
 
-  const handleClose = () => {
+  /**
+   * Resets form state and closes the modal.
+   */
+  const dismissModal = () => {
     setGroupName("");
-    setSelectedUsers([]);
+    setSelectedMemberIds([]);
     onClose();
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} size="md">
+    <Modal isOpen={isOpen} onClose={dismissModal} size="md">
       <ModalOverlay />
       <ModalContent>
         <ModalHeader>Create New Group</ModalHeader>
@@ -134,7 +152,7 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
             />
 
             <Text fontWeight="bold" fontSize="sm">
-              Select Members ({selectedUsers.length} selected)
+              Select Members ({selectedMemberIds.length} selected)
             </Text>
 
             <Box
@@ -152,11 +170,11 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
                   _hover={{ bg: "gray.100" }}
                   borderRadius="md"
                   cursor="pointer"
-                  onClick={() => handleUserToggle(u._id)}
+                  onClick={() => toggleMemberSelection(u._id)}
                 >
                   <Checkbox
-                    isChecked={selectedUsers.includes(u._id)}
-                    onChange={() => handleUserToggle(u._id)}
+                    isChecked={selectedMemberIds.includes(u._id)}
+                    onChange={() => toggleMemberSelection(u._id)}
                   />
                   <Avatar size="sm" src={u.profilePic} name={u.name} />
                   <VStack align="start" spacing={0} flex={1}>
@@ -174,14 +192,14 @@ const GroupModal = ({ isOpen, onClose, users, hostName, user, setMyChatList, myC
         </ModalBody>
 
         <ModalFooter>
-          <Button variant="ghost" mr={3} onClick={handleClose}>
+          <Button variant="ghost" mr={3} onClick={dismissModal}>
             Cancel
           </Button>
           <Button
             colorScheme="purple"
-            onClick={handleCreateGroup}
-            isLoading={isCreating}
-            isDisabled={!groupName.trim() || selectedUsers.length < 1}
+            onClick={submitGroupCreation}
+            isLoading={isSubmitting}
+            isDisabled={!groupName.trim() || selectedMemberIds.length < 1}
           >
             Create Group
           </Button>

@@ -1,3 +1,12 @@
+/**
+ * PrimeChat Chat List Component
+ * 
+ * Displays the user's conversation threads with search, unread counts,
+ * typing indicators, and new message notifications with sound alerts.
+ * 
+ * @module MyChatList
+ */
+
 import React from "react";
 import {
   Box,
@@ -15,7 +24,7 @@ import {
 import { useState } from "react";
 import { useEffect } from "react";
 import { useContext } from "react";
-import chatContext from "../../context/chatContext";
+import primeChatContext from "../../context/chatContext";
 import { AddIcon, Search2Icon } from "@chakra-ui/icons";
 import { useToast } from "@chakra-ui/react";
 import ProfileMenu from "../Navbar/ProfileMenu";
@@ -24,7 +33,8 @@ import NewMessage from "../miscellaneous/NewMessage";
 import wavFile from "../../assets/newmessage.wav";
 import { ProfileModal } from "../miscellaneous/ProfileModal";
 
-const scrollbarconfig = {
+/** Custom scrollbar styling for the chat list container */
+const customScrollStyles = {
   "&::-webkit-scrollbar": {
     width: "5px",
     height: "5px",
@@ -42,15 +52,15 @@ const scrollbarconfig = {
 };
 
 const MyChatList = (props) => {
-  var sound = new Audio(wavFile);
+  var notificationSound = new Audio(wavFile);
   const toast = useToast();
-  const context = useContext(chatContext);
+  const appContext = useContext(primeChatContext);
   const {
     hostName,
     user,
     socket,
-    myChatList: chatlist,
-    originalChatList: data,
+    myChatList: conversationList,
+    originalChatList: fullConversationList,
     activeChatId,
     setActiveChatId,
     setMyChatList,
@@ -60,62 +70,65 @@ const MyChatList = (props) => {
     setReceiver,
     isLoading,
     isOtherUserTyping,
-  } = context;
+  } = appContext;
   const { isOpen, onOpen, onClose } = useDisclosure();
 
+  // Listen for new message notifications from other conversations
   useEffect(() => {
-    socket.on("new-message-notification", async (data) => {
-      var newlist = chatlist;
+    socket.on("new-message-notification", async (notificationData) => {
+      var updatedList = conversationList;
 
-      let chatIndex = newlist.findIndex(
-        (chat) => chat._id === data.conversationId
+      let threadIndex = updatedList.findIndex(
+        (chat) => chat._id === notificationData.conversationId
       );
-      if (chatIndex === -1) {
-        newlist.unshift(data.conversation);
+      if (threadIndex === -1) {
+        updatedList.unshift(notificationData.conversation);
       }
-      chatIndex = newlist.findIndex((chat) => chat._id === data.conversationId);
-      newlist[chatIndex].latestmessage = data.text;
+      threadIndex = updatedList.findIndex(
+        (chat) => chat._id === notificationData.conversationId
+      );
+      updatedList[threadIndex].latestmessage = notificationData.text;
 
-      if (activeChatId !== data.conversationId) {
-        newlist[chatIndex].unreadCounts = newlist[chatIndex].unreadCounts.map(
-          (unread) => {
-            if (unread.userId === user._id) {
-              unread.count = unread.count + 1;
+      if (activeChatId !== notificationData.conversationId) {
+        updatedList[threadIndex].unreadCounts = updatedList[threadIndex].unreadCounts.map(
+          (counter) => {
+            if (counter.userId === user._id) {
+              counter.count = counter.count + 1;
             }
-            return unread;
+            return counter;
           }
         );
-        newlist[chatIndex].updatedAt = new Date();
+        updatedList[threadIndex].updatedAt = new Date();
       }
 
-      // If you want to move the updated chat to the beginning of the list
-      let updatedChat = newlist.splice(chatIndex, 1)[0];
-      newlist.unshift(updatedChat);
+      // Move the updated conversation to the top of the list
+      let movedConversation = updatedList.splice(threadIndex, 1)[0];
+      updatedList.unshift(movedConversation);
 
-      setMyChatList([...newlist]); // Create a new array to update state
+      setMyChatList([...updatedList]);
 
-      //find the name of person who sent the message
-      let sender = newlist.find((chat) => chat._id === data.conversationId)
-        .members[0];
+      // Identify the message sender for the notification toast
+      let senderInfo = updatedList.find(
+        (chat) => chat._id === notificationData.conversationId
+      ).members[0];
 
-      activeChatId !== data.conversationId &&
-        sound.play().catch((error) => {
-          console.log(error);
+      // Play notification sound for messages in other conversations
+      activeChatId !== notificationData.conversationId &&
+        notificationSound.play().catch((audioError) => {
+          console.log(audioError);
         });
 
-      activeChatId !== data.conversationId &&
+      // Show notification toast for messages in non-active conversations
+      activeChatId !== notificationData.conversationId &&
         toast({
-          // title: "New Message",
-          // description: data.text,
           status: "success",
           duration: 5000,
           position: "top-right",
-
           render: () => (
             <NewMessage
-              sender={sender}
-              data={data}
-              handleChatOpen={handleChatOpen}
+              sender={senderInfo}
+              data={notificationData}
+              handleChatOpen={openConversation}
             />
           ),
         });
@@ -126,30 +139,37 @@ const MyChatList = (props) => {
     };
   });
 
-  const [squery, setsquery] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
 
-  const handleUserSearch = async (e) => {
+  /**
+   * Filters the conversation list based on user search input.
+   */
+  const filterChatsByName = async (e) => {
     if (e.target.value !== "") {
-      setsquery(e.target.value.toLowerCase());
-      const newchatlist = data.filter((chat) => {
-        const nameToSearch = chat.isGroup ? chat.name : chat.members[0].name;
-        return (nameToSearch || "").toLowerCase().includes(squery);
+      setSearchQuery(e.target.value.toLowerCase());
+      const filteredList = fullConversationList.filter((chat) => {
+        const searchableName = chat.isGroup ? chat.name : chat.members[0]?.name;
+        return (searchableName || "").toLowerCase().includes(searchQuery);
       });
-      setMyChatList(newchatlist);
+      setMyChatList(filteredList);
     } else {
-      setMyChatList(context.originalChatList);
+      setMyChatList(appContext.originalChatList);
     }
   };
 
-  const handleChatOpen = async (chatid, receiver) => {
+  /**
+   * Opens a conversation: fetches messages, joins the socket room,
+   * resets unread counts, and updates the active chat state.
+   */
+  const openConversation = async (conversationId, recipientData) => {
     try {
       setIsChatLoading(true);
       setMessageList([]);
       setIsOtherUserTyping(false);
-      const msg = document.getElementById("new-message");
-      if (msg) {
-        document.getElementById("new-message").value = "";
-        document.getElementById("new-message").focus();
+      const messageInput = document.getElementById("new-message");
+      if (messageInput) {
+        messageInput.value = "";
+        messageInput.focus();
       }
 
       setIsOtherUserTyping(false);
@@ -159,10 +179,10 @@ const MyChatList = (props) => {
       });
       await socket.emit("leave-chat", activeChatId);
 
-      socket.emit("join-chat", { roomId: chatid, userId: user._id });
-      setActiveChatId(chatid);
+      socket.emit("join-chat", { roomId: conversationId, userId: user._id });
+      setActiveChatId(conversationId);
 
-      const response = await fetch(`${hostName}/message/${chatid}/${user._id}`, {
+      const response = await fetch(`${hostName}/message/${conversationId}/${user._id}`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -170,36 +190,37 @@ const MyChatList = (props) => {
         },
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch data");
+        throw new Error("Failed to fetch messages");
       }
-      const jsonData = await response.json();
+      const messagesData = await response.json();
 
-      setMessageList(jsonData);
-      setReceiver(receiver);
+      setMessageList(messagesData);
+      setReceiver(recipientData);
       setIsChatLoading(false);
 
-      const newlist = chatlist.map((chat) => {
-        if (chat._id === chatid) {
-          chat.unreadCounts = chat.unreadCounts.map((unread) => {
-            if (unread.userId === user._id) {
-              unread.count = 0;
+      // Reset unread count for this conversation
+      const updatedList = conversationList.map((chat) => {
+        if (chat._id === conversationId) {
+          chat.unreadCounts = chat.unreadCounts.map((counter) => {
+            if (counter.userId === user._id) {
+              counter.count = 0;
             }
-            return unread;
+            return counter;
           });
         }
         return chat;
       });
 
-      setMyChatList(newlist);
+      setMyChatList(updatedList);
 
+      // Auto-scroll to the latest message
       setTimeout(() => {
         document.getElementById("chat-box")?.scrollTo({
           top: document.getElementById("chat-box").scrollHeight,
-          // behavior: "smooth",
         });
       }, 100);
-    } catch (error) {
-      console.log(error);
+    } catch (openError) {
+      console.log("Failed to open conversation:", openError);
     }
   };
 
@@ -225,7 +246,7 @@ const MyChatList = (props) => {
               <Input
                 type="text"
                 placeholder="search user"
-                onChange={handleUserSearch}
+                onChange={filterChatsByName}
                 id="search-input"
               />
             </InputGroup>
@@ -251,14 +272,13 @@ const MyChatList = (props) => {
           Add new Chat <AddIcon ml={2} fontSize={"12px"} />
         </Button>
 
-        <Box h={"100%"} px={2} flex={1} overflowY={"auto"} sx={scrollbarconfig}>
-          {chatlist.map((chat) => {
-            // Determine display name and profile pic based on whether it's a group
+        <Box h={"100%"} px={2} flex={1} overflowY={"auto"} sx={customScrollStyles}>
+          {conversationList.map((chat) => {
             const displayName = chat.isGroup ? chat.name : chat.members[0]?.name;
             const displayPic = chat.isGroup
               ? (chat.profilePic || "https://via.placeholder.com/150")
               : (chat.members[0]?.profilePic || "https://via.placeholder.com/150");
-            const receiverData = chat.isGroup ? chat : chat.members[0];
+            const recipientData = chat.isGroup ? chat : chat.members[0];
 
             return (
               <Flex
@@ -273,7 +293,7 @@ const MyChatList = (props) => {
                   h={"4em"}
                   w={"100%"}
                   justifyContent={"space-between"}
-                  onClick={() => handleChatOpen(chat._id, receiverData)}
+                  onClick={() => openConversation(chat._id, recipientData)}
                   colorScheme={chat._id === activeChatId ? "purple" : "gray"}
                 >
                   <Flex>
@@ -337,7 +357,7 @@ const MyChatList = (props) => {
                     </Box>
 
                     {chat.unreadCounts.find(
-                      (unread) => unread.userId === user._id
+                      (counter) => counter.userId === user._id
                     )?.count > 0 && (
                         <Circle
                           backgroundColor={"black"}
@@ -350,7 +370,7 @@ const MyChatList = (props) => {
                             &nbsp;
                             {
                               chat.unreadCounts.find(
-                                (unread) => unread.userId === user._id
+                                (counter) => counter.userId === user._id
                               )?.count
                             }
                             &nbsp;
@@ -368,7 +388,7 @@ const MyChatList = (props) => {
           onClose={onClose}
           onOpen={onOpen}
           user={user}
-          setUser={context.setUser}
+          setUser={appContext.setUser}
         />
       </Box>
     </>

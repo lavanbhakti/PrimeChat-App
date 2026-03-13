@@ -1,3 +1,12 @@
+/**
+ * PrimeChat Loading Spinner
+ * 
+ * A centered spinner component used as a placeholder
+ * while chat messages or conversations are being loaded.
+ * 
+ * @module ChatLoadingSpinner
+ */
+
 import { Box, Spinner } from "@chakra-ui/react";
 import React from "react";
 

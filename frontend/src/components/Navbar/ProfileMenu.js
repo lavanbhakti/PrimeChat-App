@@ -1,3 +1,12 @@
+/**
+ * PrimeChat Profile Menu Dropdown
+ * 
+ * Displays a dropdown menu with the user's avatar, profile link,
+ * color mode toggle (mobile), and logout option.
+ * 
+ * @module ProfileMenu
+ */
+
 import React, { useContext } from "react";
 import {
   Button,
@@ -12,11 +21,11 @@ import { ChevronDownIcon } from "@chakra-ui/icons";
 import { useNavigate } from "react-router-dom";
 import { ProfileModal } from "../miscellaneous/ProfileModal";
 import { useColorMode } from "@chakra-ui/react";
-import chatContext from "../../context/chatContext";
+import primeChatContext from "../../context/chatContext";
 
 const ProfileMenu = (props) => {
   const { toggleColorMode } = useColorMode();
-  const context = useContext(chatContext);
+  const appContext = useContext(primeChatContext);
   const {
     user,
     setUser,
@@ -24,10 +33,14 @@ const ProfileMenu = (props) => {
     setActiveChatId,
     setMessageList,
     setReceiver,
-  } = context;
-  const navigator = useNavigate();
+  } = appContext;
+  const navigate = useNavigate();
 
-  const handleLogout = async (e) => {
+  /**
+   * Signs the user out by clearing all local state and storage,
+   * then redirects to the home page.
+   */
+  const performSignOut = async (e) => {
     e.preventDefault();
     setUser({});
     setMessageList([]);
@@ -36,9 +49,10 @@ const ProfileMenu = (props) => {
     localStorage.removeItem("user");
     localStorage.removeItem("token");
     setIsAuthenticated(false);
-    console.log("logout");
-    navigator("/");
+    console.log("User signed out");
+    navigate("/");
   };
+
   return (
     <>
       <Menu>
@@ -80,7 +94,7 @@ const ProfileMenu = (props) => {
                   ? "Dark Mode"
                   : "Light Mode"}
               </MenuItem>
-              <MenuItem color={"red"} onClick={handleLogout}>
+              <MenuItem color={"red"} onClick={performSignOut}>
                 Logout
               </MenuItem>
             </MenuList>

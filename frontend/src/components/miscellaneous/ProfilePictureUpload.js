@@ -1,3 +1,13 @@
+/**
+ * PrimeChat Profile Picture Upload Modal
+ * 
+ * Handles uploading new profile or group pictures via S3 presigned URLs.
+ * Validates file type and size, shows preview, and updates the picture
+ * in the database after successful S3 upload.
+ * 
+ * @module ProfilePictureUpload
+ */
+
 import React, { useState, useRef } from "react";
 import {
   Box,
@@ -34,6 +44,10 @@ const ProfilePictureUpload = ({
   const fileInputRef = useRef(null);
   const toast = useToast();
 
+  /**
+   * Validates and sets the selected image file.
+   * Enforces image-only and 5MB size constraints.
+   */
   const handleFileSelect = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -68,6 +82,16 @@ const ProfilePictureUpload = ({
     }
   };
 
+  /**
+   * Uploads the selected image to S3 and updates the profile/group picture
+   * in the PrimeChat database.
+   * 
+   * Flow:
+   * 1. Request presigned URL from backend
+   * 2. Upload image directly to S3
+   * 3. Update profile/group picture reference in database
+   * 4. Notify parent component of successful upload
+   */
   const uploadImage = async () => {
     if (!selectedFile) return;
 
@@ -98,15 +122,14 @@ const ProfilePictureUpload = ({
       // Step 2: Upload to S3 using presigned URL
       const formData = new FormData();
 
-      // IMPORTANT: Append fields in the exact order AWS expects
+      // Append fields in the exact order AWS expects
       Object.entries(fields).forEach(([fieldKey, value]) => {
         formData.append(fieldKey, value);
       });
 
-      // File must be appended LAST
+      // File must be appended last per AWS requirements
       formData.append("file", selectedFile);
 
-      // Upload to S3 - DO NOT set Content-Type header manually
       const uploadResponse = await axios.post(url, formData);
 
       console.log("S3 upload response:", uploadResponse.status);
@@ -117,7 +140,6 @@ const ProfilePictureUpload = ({
       }
 
       // Step 3: Construct the final image URL
-      // AWS S3 URL format: https://bucket-name.s3.region.amazonaws.com/key
       const imageUrl = `${url}${url.endsWith('/') ? '' : '/'}${key}`;
 
       console.log("Image URL:", imageUrl);
@@ -155,7 +177,7 @@ const ProfilePictureUpload = ({
         isClosable: true,
       });
 
-      // Call success callback
+      // Notify parent component
       if (onUploadSuccess) {
         onUploadSuccess(imageUrl, isGroup ? data.conversation : data.user);
       }
@@ -178,6 +200,9 @@ const ProfilePictureUpload = ({
     }
   };
 
+  /**
+   * Resets state and closes the upload modal.
+   */
   const handleClose = () => {
     setSelectedFile(null);
     setPreviewUrl(null);

@@ -1,260 +1,204 @@
-import { useState, useContext } from "react";
+/**
+ * PrimeChat Login Component
+ * 
+ * Handles user authentication via email+password or email+OTP.
+ * Users can switch between password and OTP login modes.
+ * On success, stores JWT and redirects to dashboard.
+ * 
+ * @module LoginForm
+ */
+
+import React from "react";
 import {
-  Flex,
-  Heading,
-  Input,
-  Button,
-  InputGroup,
   Stack,
-  InputLeftElement,
-  chakra,
-  Box,
-  Link,
-  Avatar,
-  FormControl,
-  FormHelperText,
+  Button,
+  Input,
+  InputGroup,
   InputRightElement,
-  Card,
-  CardBody,
-  useToast,
-  Spinner,
-  Tooltip,
+  Text,
 } from "@chakra-ui/react";
-import { FaLock } from "react-icons/fa";
+import { useState, useContext } from "react";
 import { useNavigate } from "react-router-dom";
-import chatContext from "../../context/chatContext";
-import { ArrowBackIcon } from "@chakra-ui/icons";
+import primeChatContext from "../../context/chatContext";
+import { useToast } from "@chakra-ui/react";
+import { ViewOffIcon, ViewIcon } from "@chakra-ui/icons";
 
-const CFaLock = chakra(FaLock);
+const Login = () => {
+  const navigate = useNavigate();
+  const appContext = useContext(primeChatContext);
+  const { setIsAuthenticated, setUser, socket, hostName, fetchData } = appContext;
 
-const Login = (props) => {
-  const context = useContext(chatContext);
-  const { hostName, socket, setUser, setIsAuthenticated, fetchData } = context;
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [isPasswordHidden, setIsPasswordHidden] = useState(true);
+  const [isOtpMode, setIsOtpMode] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isOtpSending, setIsOtpSending] = useState(false);
+
   const toast = useToast();
-  const navigator = useNavigate();
 
-  const [email, setemail] = useState();
-  const [password, setpassword] = useState();
-  const handletabs = props.handleTabsChange;
-  const [showPassword, setShowPassword] = useState(false);
-  const [forgotpasswordshow, setforgotpasswordshow] = useState(false);
-  const [sending, setsending] = useState(false);
-
-  const handleShowClick = () => setShowPassword(!showPassword);
-
-  const showtoast = (title, description, status) => {
+  /**
+   * Displays a notification toast with consistent styling.
+   */
+  const showNotification = (title, description, status) => {
     toast({
-      title: title,
-      description: description,
-      status: status,
+      title,
+      description,
+      status,
       duration: 5000,
       isClosable: true,
+      position: "bottom",
     });
   };
-  const handleLogin = async function (e) {
-    e.preventDefault();
 
-    const data = {
-      email: email,
-    };
-
-    //check if the user is trying to login using otp
-    const otp = document.getElementById("otp")?.value;
-
-    if (otp?.length > 0 && forgotpasswordshow) {
-      data.otp = otp;
-    } else {
-      data.password = password;
+  /**
+   * Sends a one-time password to the user's email for passwordless login.
+   */
+  const requestLoginOtp = async () => {
+    if (!email) {
+      showNotification("Missing Email", "Please enter your email address first", "warning");
+      return;
     }
 
-    try {
-      const response = await fetch(`${hostName}/auth/login`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
-      });
-
-      const resdata = await response.json();
-
-      if (response.status !== 200) {
-        showtoast("An error occurred.", resdata.error, "error");
-      } else {
-        showtoast("Login successful", "You are now logged in", "success");
-
-        localStorage.setItem("token", resdata.authtoken);
-        setUser(await resdata.user);
-        socket.emit("setup", await resdata.user._id);
-        setIsAuthenticated(true);
-        fetchData();
-        navigator("/dashboard");
-      }
-    } catch (error) {
-      console.log(error);
-    }
-  };
-
-  const handlesendotp = async (e) => {
-    e.preventDefault();
-    setsending(true);
-
-    const data = {
-      email: email,
-    };
-
+    setIsOtpSending(true);
     try {
       const response = await fetch(`${hostName}/auth/getotp`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(data),
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
       });
 
-      const resdata = await response.json();
+      const responseData = await response.json();
 
-      setsending(false);
-
-      if (response.status !== 200) {
-        showtoast("An error occurred.", resdata.error, "error");
+      if (response.status === 200) {
+        showNotification("OTP Sent", "Check your email for the verification code", "success");
+        setIsOtpMode(true);
       } else {
-        showtoast("otp sent", "otp sent to your email", "success");
+        showNotification("Error", responseData.error || "Failed to send OTP", "error");
       }
-    } catch (error) {
-      console.log(error);
+    } catch (networkError) {
+      showNotification("Connection Error", "Unable to reach the server", "error");
+    } finally {
+      setIsOtpSending(false);
     }
   };
 
-  return (
-    <Flex
-      flexDirection="column"
-      width="100wh"
-      height="70vh"
-      justifyContent="center"
-      alignItems="center"
-      borderRadius={15}
-    >
-      <Stack
-        flexDir="column"
-        mb="2"
-        justifyContent="center"
-        alignItems="center"
-      >
-        <Avatar bg="purple.300" />
-        <Heading color="pruple.400">Welcome Back</Heading>
-        <Card minW={{ base: "90%", md: "468px" }} borderRadius={15} shadow={0}>
-          <CardBody p={0}>
-            <form>
-              <Stack spacing={4}>
-                {forgotpasswordshow && (
-                  <Tooltip label="login" aria-label="A tooltip">
-                    <Button
-                      w={"fit-content"}
-                      onClick={() => setforgotpasswordshow(false)}
-                    >
-                      <ArrowBackIcon />
-                    </Button>
-                  </Tooltip>
-                )}
-                <FormControl display={"flex"}>
-                  <InputGroup
-                    borderEndRadius={"10px"}
-                    borderStartRadius={"10px"}
-                    size={"lg"}
-                  >
-                    <Input
-                      id="login-email"
-                      type="email"
-                      placeholder="email address"
-                      focusBorderColor="purple.500"
-                      onChange={(e) => setemail(e.target.value)}
-                    />
-                  </InputGroup>
-                  {forgotpasswordshow && (
-                    <Button
-                      m={1}
-                      fontSize={"sm"}
-                      onClick={(e) => handlesendotp(e)}
-                    >
-                      {sending ? <Spinner size="sm" /> : "Send otp"}
-                    </Button>
-                  )}
-                </FormControl>
+  /**
+   * Submits login credentials (email + password or email + OTP)
+   * and handles the authentication response.
+   */
+  const submitLoginCredentials = async (e) => {
+    e.preventDefault();
 
-                {!forgotpasswordshow && (
-                  <FormControl>
-                    <InputGroup
-                      borderEndRadius={"10px"}
-                      borderStartRadius={"10px"}
-                      size={"lg"}
-                    >
-                      <InputLeftElement
-                        pointerEvents="none"
-                        color="gray.300"
-                        children={<CFaLock color="gray.300" />}
-                      />
-                      <Input
-                        type={showPassword ? "text" : "password"}
-                        placeholder="Password"
-                        focusBorderColor="purple.500"
-                        onChange={(e) => setpassword(e.target.value)}
-                      />
-                      <InputRightElement mx={1}>
-                        <Button
-                          fontSize={"x-small"}
-                          size={"xs"}
-                          onClick={handleShowClick}
-                        >
-                          {showPassword ? "Hide" : "Show"}
-                        </Button>
-                      </InputRightElement>
-                    </InputGroup>
-                    <FormHelperText textAlign="right">
-                      <Link onClick={() => setforgotpasswordshow(true)}>
-                        forgot password?
-                      </Link>
-                    </FormHelperText>
-                  </FormControl>
-                )}
-                {forgotpasswordshow && (
-                  <FormControl>
-                    <InputGroup
-                      borderEndRadius={"10px"}
-                      borderStartRadius={"10px"}
-                      size={"lg"}
-                    >
-                      <Input
-                        id={"otp"}
-                        type="number"
-                        placeholder="enter otp"
-                        focusBorderColor="purple.500"
-                      />
-                    </InputGroup>
-                  </FormControl>
-                )}
-                <Button
-                  borderRadius={10}
-                  type="submit"
-                  variant="solid"
-                  colorScheme="purple"
-                  width="full"
-                  onClick={handleLogin}
-                >
-                  {forgotpasswordshow ? "Login using otp" : "Login"}
-                </Button>
-              </Stack>
-            </form>
-          </CardBody>
-        </Card>
+    if (!email) {
+      showNotification("Missing Field", "Email is required", "warning");
+      return;
+    }
+
+    if (!isOtpMode && !password) {
+      showNotification("Missing Field", "Password is required", "warning");
+      return;
+    }
+
+    if (isOtpMode && !otp) {
+      showNotification("Missing Field", "OTP is required", "warning");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const loginPayload = isOtpMode ? { email, otp } : { email, password };
+
+      const response = await fetch(`${hostName}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(loginPayload),
+      });
+
+      const responseData = await response.json();
+
+      if (response.status === 200) {
+        localStorage.setItem("token", responseData.authtoken);
+        localStorage.setItem("user", JSON.stringify(responseData.user));
+        setUser(responseData.user);
+        setIsAuthenticated(true);
+        socket.emit("setup", responseData.user._id);
+        fetchData();
+        navigate("/dashboard");
+        showNotification("Welcome!", "Login successful", "success");
+      } else {
+        showNotification("Login Failed", responseData.error || "Invalid credentials", "error");
+      }
+    } catch (networkError) {
+      showNotification("Connection Error", "Unable to reach the server", "error");
+    }
+    setIsSubmitting(false);
+  };
+
+  return (
+    <form onSubmit={submitLoginCredentials}>
+      <Stack spacing={4} mt={4}>
+        <Input
+          type="email"
+          placeholder="Email Address"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+
+        {!isOtpMode ? (
+          <InputGroup>
+            <Input
+              type={isPasswordHidden ? "password" : "text"}
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+            />
+            <InputRightElement>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setIsPasswordHidden(!isPasswordHidden)}
+              >
+                {isPasswordHidden ? <ViewIcon /> : <ViewOffIcon />}
+              </Button>
+            </InputRightElement>
+          </InputGroup>
+        ) : (
+          <Input
+            type="text"
+            placeholder="Enter OTP from your email"
+            value={otp}
+            onChange={(e) => setOtp(e.target.value)}
+          />
+        )}
+
+        <Button
+          colorScheme="purple"
+          type="submit"
+          isLoading={isSubmitting}
+          loadingText="Logging in..."
+        >
+          Login
+        </Button>
+
+        <Button
+          variant="link"
+          colorScheme="blue"
+          onClick={isOtpMode ? () => setIsOtpMode(false) : requestLoginOtp}
+          isLoading={isOtpSending}
+          loadingText="Sending OTP..."
+        >
+          {isOtpMode ? "Use Password Instead" : "Login with OTP"}
+        </Button>
+
+        {!isOtpMode && (
+          <Text fontSize="sm" textAlign="center" color="gray.500">
+            We'll send a one-time code to your email
+          </Text>
+        )}
       </Stack>
-      <Box>
-        New to us?{" "}
-        <Link color="purple.500" onClick={() => handletabs(1)}>
-          Sign Up
-        </Link>
-      </Box>
-    </Flex>
+    </form>
   );
 };
 

@@ -1,32 +1,30 @@
-import React, { useContext, useState } from "react";
-import { Box, Button, Flex, Text, Link, useDisclosure } from "@chakra-ui/react";
+/**
+ * PrimeChat Navigation Bar
+ * 
+ * Top-level navigation component that displays the app name,
+ * dark/light mode toggle, DevWorkspace toggle button,
+ * and the user profile menu on desktop.
+ * 
+ * @module Navbar
+ */
+
+import React, { useContext } from "react";
+import { Box, Button, Flex, Text, Link, useDisclosure, useColorMode } from "@chakra-ui/react";
 import { FaMoon, FaSun, FaCode } from "react-icons/fa";
 import ProfileMenu from "./ProfileMenu";
-import chatContext from "../../context/chatContext";
+import primeChatContext from "../../context/chatContext";
 
 const Navbar = (props) => {
-  const context = useContext(chatContext);
-  const { isAuthenticated } = context;
+  const appContext = useContext(primeChatContext);
+  const { isAuthenticated } = appContext;
   const { isOpen, onOpen, onClose } = useDisclosure();
-  const colormode = localStorage.getItem("chakra-ui-color-mode");
-  const [icon, seticon] = useState(
-    colormode === "dark" ? <FaSun /> : <FaMoon />
-  );
+  const { colorMode, toggleColorMode } = useColorMode();
+  const currentPath = window.location.pathname;
 
-  const path = window.location.pathname;
-
-  const handleToggle = () => {
-    if (colormode === "dark") {
-      seticon(<FaMoon />);
-      props.toggleColorMode();
-    } else {
-      seticon(<FaSun />);
-      props.toggleColorMode();
-    }
-  };
-
-  const handleDevWorkspaceToggle = () => {
-    // Call the global function to toggle CodePad
+  /**
+   * Opens/closes the DevWorkspace side panel via the global toggle function.
+   */
+  const toggleWorkspacePanel = () => {
     if (window.toggleDevWorkspace) {
       window.toggleDevWorkspace();
     }
@@ -34,7 +32,7 @@ const Navbar = (props) => {
 
   return (
     <>
-      {!path.includes("dashboard") && (
+      {!currentPath.includes("dashboard") && (
         <Box
           position={"absolute"}
           top={5}
@@ -45,15 +43,16 @@ const Navbar = (props) => {
           }}
         >
           <Button
-            p={3}
-            borderRadius={"full"}
+            borderRadius="md"
             borderWidth={1}
-            fontSize={"small"}
-            backgroundColor={"transparent"}
-            onClick={handleToggle}
+            fontSize="sm"
+            backgroundColor="transparent"
+            onClick={toggleColorMode}
             mx={1}
+            leftIcon={colorMode === "dark" ? <FaSun /> : <FaMoon />}
+            px={4}
           >
-            {icon}
+            {colorMode === "dark" ? "Light Theme" : "Dark Theme"}
           </Button>
         </Box>
       )}
@@ -77,28 +76,29 @@ const Navbar = (props) => {
             alignItems="center"
           >
             <Button
-              onClick={handleToggle}
-              mr={2}
-              borderRadius={"full"}
+              onClick={toggleColorMode}
+              mr={4}
+              borderRadius="md"
               borderWidth={1}
-              fontSize={"small"}
-              backgroundColor={"transparent"}
-              p={3}
+              fontSize="sm"
+              backgroundColor="transparent"
+              leftIcon={colorMode === "dark" ? <FaSun /> : <FaMoon />}
+              px={4}
             >
-              {icon}
+              {colorMode === "dark" ? "Light Theme" : "Dark Theme"}
             </Button>
-            {isAuthenticated && path.includes("dashboard") && (
+            {isAuthenticated && currentPath.includes("dashboard") && (
               <Button
-                borderRadius={"full"}
+                borderRadius="md"
                 borderWidth={1}
-                fontSize={"small"}
-                backgroundColor={"transparent"}
-                p={3}
-                mr={2}
-                onClick={handleDevWorkspaceToggle}
-                title="Dev Workspace"
+                fontSize="sm"
+                backgroundColor="transparent"
+                px={4}
+                mr={3}
+                onClick={toggleWorkspacePanel}
+                leftIcon={<FaCode />}
               >
-                <FaCode />
+                Dev Workspace
               </Button>
             )}
             {isAuthenticated && (

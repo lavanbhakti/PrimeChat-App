@@ -1,91 +1,101 @@
-import React, { useState } from "react";
-import {
-  Box,
-  Flex,
-  Text,
-  Button,
-  Modal,
-  ModalOverlay,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalCloseButton,
-  useDisclosure,
-} from "@chakra-ui/react";
+/**
+ * PrimeChat Home / Landing Page
+ * 
+ * Serves as the entry point for unauthenticated users.
+ * Provides buttons to access Login or Signup flows.
+ * Redirects authenticated users to the dashboard automatically.
+ * 
+ * @module Home
+ */
+
+import React, { useContext, useEffect, useState } from "react";
+import { Button, Box, Text, Flex, Image, Spinner } from "@chakra-ui/react";
 import Auth from "./Authentication/Auth";
-import { useContext, useEffect } from "react";
-import chatContext from "../context/chatContext";
-import { Link, useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
+import primeChatContext from "../context/chatContext";
 
 const Home = () => {
-  // context
-  const context = useContext(chatContext);
-  const { isAuthenticated } = context;
-  const { isOpen, onOpen, onClose } = useDisclosure();
-  const [index, setindex] = useState();
-  const navigator = useNavigate();
+  const navigate = useNavigate();
+  const { isAuthenticated, isLoading } = useContext(primeChatContext);
+  const [selectedAuthTab, setSelectedAuthTab] = useState(0);
+  const [isAuthPageVisible, setIsAuthPageVisible] = useState(false);
 
+  // Auto-redirect authenticated users to the dashboard
   useEffect(() => {
     if (isAuthenticated) {
-      navigator("/dashboard");
+      navigate("/dashboard");
     }
-  });
+  }, [isAuthenticated, navigate]);
 
-  const handleloginopen = () => {
-    setindex(0);
-    onOpen();
+  /**
+   * Shows the authentication modal with the Login tab selected.
+   */
+  const openLoginDialog = () => {
+    setSelectedAuthTab(0);
+    setIsAuthPageVisible(true);
   };
 
-  const handlesignupopen = () => {
-    setindex(1);
-    onOpen();
+  /**
+   * Shows the authentication modal with the Signup tab selected.
+   */
+  const openSignupDialog = () => {
+    setSelectedAuthTab(1);
+    setIsAuthPageVisible(true);
   };
+
+  if (isLoading) {
+    return (
+      <Box
+        height={"92vh"}
+        display={"flex"}
+        justifyContent={"center"}
+        alignItems={"center"}
+      >
+        <Spinner size={"xl"} />
+      </Box>
+    );
+  }
 
   return (
-    <Box h={"max-content"} verticalAlign="middle">
-      <Flex direction="column" align="center" justify="center" minH="80vh">
-        <Box textAlign="center">
-          <Text fontSize={"7xl"} fontWeight={"bold"} fontFamily={"Work sans"}>
-            PrimeChat
+    <Box
+      height={"92vh"}
+      display={"flex"}
+      justifyContent={"center"}
+      alignItems={"center"}
+      w={"100%"}
+    >
+      {!isAuthPageVisible ? (
+        <Box>
+          <Text fontSize="3xl" fontWeight={"bold"} textAlign={"center"} mb={5}>
+            Welcome to PrimeChat
           </Text>
-          <Text fontSize="xl" fontWeight="bold" mb={4}>
-            Online Chatting App
+          <Text fontSize="lg" textAlign={"center"} mb={5}>
+            Connect, Chat, and Collaborate — your private messaging hub
           </Text>
-          <Button mr={3} onClick={handleloginopen}>
-            Login
-          </Button>
-          <Button colorScheme="purple" onClick={handlesignupopen}>
-            Sign Up
-          </Button>
+          <Flex justify={"center"} gap={3}>
+            <Button
+              colorScheme="purple"
+              onClick={openLoginDialog}
+              size="lg"
+            >
+              Login
+            </Button>
+            <Button
+              colorScheme="blue"
+              onClick={openSignupDialog}
+              size="lg"
+              variant={"outline"}
+            >
+              Sign Up
+            </Button>
+          </Flex>
         </Box>
-      </Flex>
-      {/* Copyright */}
-      <Text
-        fontSize="sm"
-        position={"fixed"}
-        bottom={2}
-        left={"calc(50% - 155px)"}
-        mt={4}
-        textAlign="center"
-      >
-        &copy; 2026 PrimeChat.
-      </Text>
-      {/* <Auth /> */}
-      <Modal
-        isOpen={isOpen}
-        onClose={onClose}
-        colorScheme="red"
-        size={{ base: "md", md: "xl" }}
-      >
-        <ModalOverlay />
-        <ModalContent w={{ base: "95vw" }}>
-          <ModalHeader></ModalHeader>
-          <ModalBody>
-            <Auth tabindex={index} />
-          </ModalBody>
-          <ModalCloseButton />
-        </ModalContent>
-      </Modal>
+      ) : (
+        <Auth
+          selectedAuthTab={selectedAuthTab}
+          setSelectedAuthTab={setSelectedAuthTab}
+        />
+      )}
     </Box>
   );
 };

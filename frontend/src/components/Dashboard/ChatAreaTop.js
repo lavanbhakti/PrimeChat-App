@@ -1,53 +1,35 @@
-import {
-  Flex,
-  Text,
-  Button,
-  Image,
-  Tooltip,
-  SkeletonCircle,
-  Skeleton,
-  Circle,
-  Stack,
-  Menu,
-  MenuButton,
-  MenuList,
-  MenuItem,
-  IconButton,
-  useToast,
-} from "@chakra-ui/react";
-import { ArrowBackIcon, HamburgerIcon } from "@chakra-ui/icons";
-import { useContext, useEffect } from "react";
-import chatContext from "../../context/chatContext";
+/**
+ * PrimeChat Chat Header Component
+ * 
+ * Displays recipient information at the top of the chat area:
+ * profile picture, name, online/offline status, and last seen time.
+ * Clicking the header opens the profile modal.
+ * 
+ * @module ChatAreaTop
+ */
+
+import React, { useContext, useEffect, useState, useCallback } from "react";
+import { Box, Flex, Image, Text, useDisclosure, Menu, MenuButton, MenuList, MenuItem, IconButton, useToast } from "@chakra-ui/react";
+import { SettingsIcon, ArrowBackIcon } from "@chakra-ui/icons";
+import primeChatContext from "../../context/chatContext";
 import { ProfileModal } from "../miscellaneous/ProfileModal";
-import { useDisclosure } from "@chakra-ui/react";
 
-const ChatAreaTop = () => {
-  const context = useContext(chatContext);
-
-  const {
-    receiver,
-    setReceiver,
-    activeChatId,
-    setActiveChatId,
-    setMessageList,
-    isChatLoading,
-    hostName,
-    socket,
-    myChatList,
-    setMyChatList,
-    user,
-  } = context;
-
+const ChatAreaTop = ({ onBackClick }) => {
+  const appContext = useContext(primeChatContext);
+  const { hostName, receiver, setReceiver, activeChatId, setActiveChatId, myChatList, setMyChatList } = appContext;
   const { isOpen, onOpen, onClose } = useDisclosure();
+  const [presenceStatus, setPresenceStatus] = useState(null);
   const toast = useToast();
 
-  const getReceiverOnlineStatus = async () => {
-    if (!receiver._id || receiver.isGroup) {
-      return;
-    }
+  /**
+   * Polls the server for the recipient's current online status.
+   * Updates local state and the receiver context accordingly.
+   */
+  const pollRecipientPresence = useCallback(async () => {
+    if (!receiver?._id || receiver?.isGroup) return;
 
     try {
-      const repsonse = await fetch(
+      const response = await fetch(
         `${hostName}/user/online-status/${receiver._id}`,
         {
           method: "GET",
@@ -57,288 +39,198 @@ const ChatAreaTop = () => {
           },
         }
       );
-      const data = await repsonse.json();
-      setReceiver((receiver) => ({
-        ...receiver,
-        isOnline: data.isOnline,
+
+      const presenceData = await response.json();
+      setPresenceStatus(presenceData);
+      setReceiver((prevReceiver) => ({
+        ...prevReceiver,
+        isOnline: presenceData.isOnline,
       }));
-    } catch (error) { }
-  };
-
-  const handleBack = () => {
-    socket.emit("leave-chat", activeChatId);
-    setActiveChatId("");
-    setMessageList([]);
-    setReceiver({});
-  };
-
-  const handleDeleteChat = async () => {
-    if (receiver.isGroup) {
-      toast({
-        title: "Cannot delete group chat",
-        description: "Please exit the group instead",
-        status: "warning",
-        duration: 3000,
-        isClosable: true,
-      });
-      return;
+    } catch (pollError) {
+      console.log("Presence polling error:", pollError);
     }
+  }, [receiver?._id, receiver?.isGroup, hostName, setReceiver]);
 
-    try {
-      const response = await fetch(
-        `${hostName}/conversation/${activeChatId}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-            "auth-token": localStorage.getItem("token"),
-          },
-        }
-      );
+  // Poll presence status on mount and at regular intervals
+  useEffect(() => {
+    pollRecipientPresence();
+    const pollingInterval = setInterval(pollRecipientPresence, 30000);
+    return () => clearInterval(pollingInterval);
+  }, [pollRecipientPresence]);
 
-      if (response.ok) {
-        // Remove from chat list
-        setMyChatList(myChatList.filter((chat) => chat._id !== activeChatId));
-        handleBack();
-        toast({
-          title: "Chat deleted",
-          status: "success",
-          duration: 2000,
-          isClosable: true,
-        });
-      } else {
-        throw new Error("Failed to delete chat");
-      }
-    } catch (error) {
-      toast({
-        title: "Error deleting chat",
-        description: error.message,
-        status: "error",
-        duration: 3000,
-        isClosable: true,
-      });
-    }
-  };
+  /**
+   * Formats the last seen timestamp into a human-readable string.
+   * Returns relative descriptions for recent times and absolute dates for older ones.
+   * 
+   * @param {string|Date} lastSeenTimestamp - ISO timestamp of last activity
+   * @returns {string} Formatted "last seen" description
+   */
+  const formatLastSeenTimestamp = (lastSeenTimestamp) => {
+    if (!lastSeenTimestamp) return "";
 
-  const handleExitGroup = async () => {
-    if (!receiver.isGroup) {
-      return;
-    }
+    const lastSeenDate = new Date(lastSeenTimestamp);
+    const currentDate = new Date();
+    const elapsedMs = currentDate.getTime() - lastSeenDate.getTime();
+    const elapsedMinutes = Math.floor(elapsedMs / 60000);
 
-    try {
-      const response = await fetch(
-        `${hostName}/conversation/${activeChatId}/leave`,
-        {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "auth-token": localStorage.getItem("token"),
-          },
-        }
-      );
+    if (elapsedMinutes < 1) return "last seen just now";
+    if (elapsedMinutes < 60) return `last seen ${elapsedMinutes} min ago`;
 
-      if (response.ok) {
-        // Remove from chat list
-        setMyChatList(myChatList.filter((chat) => chat._id !== activeChatId));
-        handleBack();
-        toast({
-          title: "Left group",
-          status: "success",
-          duration: 2000,
-          isClosable: true,
-        });
-      } else {
-        throw new Error("Failed to exit group");
-      }
-    } catch (error) {
-      toast({
-        title: "Error exiting group",
-        description: error.message,
-        status: "error",
-        duration: 3000,
-        isClosable: true,
-      });
-    }
-  };
+    const elapsedHours = Math.floor(elapsedMinutes / 60);
+    if (elapsedHours < 24) return `last seen ${elapsedHours} hr ago`;
 
-  const handleDeleteGroup = async () => {
-    if (!receiver.isGroup) {
-      return;
-    }
-
-    try {
-      const response = await fetch(
-        `${hostName}/conversation/${activeChatId}`,
-        {
-          method: "DELETE",
-          headers: {
-            "Content-Type": "application/json",
-            "auth-token": localStorage.getItem("token"),
-          },
-        }
-      );
-
-      if (response.ok) {
-        // Remove from chat list and notify all members via socket
-        socket.emit("group-deleted", {
-          groupId: activeChatId,
-          members: receiver.members.map((m) => m._id),
-        });
-        setMyChatList(myChatList.filter((chat) => chat._id !== activeChatId));
-        handleBack();
-        toast({
-          title: "Group deleted",
-          status: "success",
-          duration: 2000,
-          isClosable: true,
-        });
-      } else {
-        throw new Error("Failed to delete group");
-      }
-    } catch (error) {
-      toast({
-        title: "Error deleting group",
-        description: error.message,
-        status: "error",
-        duration: 3000,
-        isClosable: true,
-      });
-    }
-  };
-
-  const getLastSeenString = (lastSeen) => {
-    var lastSeenString = "last seen ";
-    if (new Date(lastSeen).toDateString() === new Date().toDateString()) {
-      lastSeenString += "today ";
-    } else if (
-      new Date(lastSeen).toDateString() ===
-      new Date(new Date().setDate(new Date().getDate() - 1)).toDateString()
-    ) {
-      lastSeenString += "yesterday ";
-    } else {
-      lastSeenString += `on ${new Date(lastSeen).toLocaleDateString()} `;
-    }
-
-    lastSeenString += `at ${new Date(lastSeen).toLocaleTimeString([], {
+    // More than 24 hours — show formatted date
+    const timeString = lastSeenDate.toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
-    })}`;
+    });
 
-    return lastSeenString;
+    const isYesterday =
+      currentDate.toDateString() !==
+        lastSeenDate.toDateString() &&
+      new Date(currentDate - 86400000).toDateString() ===
+        lastSeenDate.toDateString();
+
+    if (isYesterday) return `last seen yesterday at ${timeString}`;
+
+    return `last seen ${lastSeenDate.toLocaleDateString()} at ${timeString}`;
   };
 
-  useEffect(() => {
-    getReceiverOnlineStatus();
-  }, [receiver?._id]);
+  /** Determine display name and image based on chat type */
+  const displayName = receiver?.isGroup
+    ? receiver?.name
+    : receiver?.name || "Unknown";
+
+  const displayImage = receiver?.isGroup
+    ? receiver?.profilePic || "https://via.placeholder.com/150"
+    : receiver?.profilePic || "https://via.placeholder.com/150";
+
+  /**
+   * Leaves the current group conversation.
+   */
+  const handleExitGroup = async () => {
+    try {
+      const response = await fetch(`${hostName}/conversation/${activeChatId}/leave`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "auth-token": localStorage.getItem("token"),
+        },
+      });
+
+      if (response.ok) {
+        setMyChatList(myChatList.filter((chat) => chat._id !== activeChatId));
+        setActiveChatId("");
+        setReceiver({});
+        toast({ title: "Left group successfully", status: "success", duration: 3000 });
+      } else {
+        toast({ title: "Failed to leave group", status: "error", duration: 3000 });
+      }
+    } catch (error) {
+      console.log("Error leaving group:", error);
+    }
+  };
+
+  /**
+   * Permanently deletes the current conversation.
+   */
+  const handleDeleteChat = async () => {
+    try {
+      const response = await fetch(`${hostName}/conversation/${activeChatId}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          "auth-token": localStorage.getItem("token"),
+        },
+      });
+
+      if (response.ok) {
+        setMyChatList(myChatList.filter((chat) => chat._id !== activeChatId));
+        setActiveChatId("");
+        setReceiver({});
+        toast({ title: "Chat deleted", status: "success", duration: 3000 });
+      } else {
+        toast({ title: "Failed to delete chat", status: "error", duration: 3000 });
+      }
+    } catch (error) {
+      console.log("Error deleting chat:", error);
+    }
+  };
 
   return (
     <>
-      <Flex w={"100%"}>
-        <Button
-          borderRadius={0}
-          height={"inherit"}
-          onClick={() => handleBack()}
-        >
-          <ArrowBackIcon />
-        </Button>
-        <Tooltip label="View Profile">
-          <Button
-            w={"100%"}
-            mr={0}
-            p={2}
-            h={"max-content"}
-            justifyContent={"space-between"}
-            borderRadius={"0px"}
-            onClick={onOpen}
-          >
-            {isChatLoading ? (
-              <>
-                <Flex>
-                  <SkeletonCircle size="10" mx={2} />
-                  <Skeleton
-                    height="20px"
-                    width="250px"
-                    borderRadius={"md"}
-                    my={2}
-                  />
-                </Flex>
-              </>
-            ) : (
-              <>
-                <Flex gap={2} alignItems={"center"}>
-                  <Image
-                    borderRadius="full"
-                    boxSize="40px"
-                    src={receiver.isGroup ? (receiver.profilePic || "https://via.placeholder.com/150") : receiver.profilePic}
-                    alt=""
-                  />
+      <IconButton
+        icon={<ArrowBackIcon />}
+        mr={2}
+        onClick={onBackClick}
+        aria-label="Back to chat list"
+        variant="ghost"
+      />
+      <Flex
+        align="center"
+        flex={1}
+        cursor="pointer"
+        onClick={onOpen}
+      >
+        <Image
+          borderRadius="full"
+          boxSize="40px"
+          src={displayImage}
+          alt={displayName}
+          mr={3}
+        />
+        <Box>
+          <Text fontWeight="bold" fontSize="md">
+            {displayName}
+          </Text>
+          {!receiver?.isGroup && (
+            <Text fontSize="xs" color={receiver?.isOnline ? "green.400" : "gray.400"}>
+              {receiver?.isOnline
+                ? "online"
+                : formatLastSeenTimestamp(receiver?.lastSeen)}
+            </Text>
+          )}
+          {receiver?.isGroup && (
+            <Text fontSize="xs" color="gray.400">
+              {receiver?.members?.length || 0} members
+            </Text>
+          )}
+        </Box>
+      </Flex>
 
-                  <Stack
-                    justifyContent={"center"}
-                    m={0}
-                    p={0}
-                    lineHeight={1}
-                    gap={0}
-                    textAlign={"left"}
-                  >
-                    <Text mx={1} my={receiver.isOnline || receiver.isGroup ? 0 : 2} fontSize="2xl">
-                      {receiver.isGroup ? receiver.name : receiver.name}
-                    </Text>
-                    {receiver.isGroup ? (
-                      <Text mx={1} fontSize={"small"} color="gray.500">
-                        {receiver.members?.length || 0} members
-                      </Text>
-                    ) : receiver.isOnline ? (
-                      <Text mx={1} fontSize={"small"}>
-                        <Circle
-                          size="2"
-                          bg="green.500"
-                          display="inline-block"
-                          borderRadius="full"
-                          mx={1}
-                        />
-                        active now
-                      </Text>
-                    ) : (
-                      <Text my={0} mx={1} fontSize={"xx-small"}>
-                        {getLastSeenString(receiver.lastSeen)}
-                      </Text>
-                    )}
-                  </Stack>
-                </Flex>
-              </>
-            )}
-          </Button>
-        </Tooltip>
-
-        {/* Menu for chat options */}
+      {!receiver?.email?.endsWith("bot") && (
         <Menu>
           <MenuButton
             as={IconButton}
-            icon={<HamburgerIcon />}
+            icon={<SettingsIcon />}
             variant="ghost"
-            aria-label="Options"
+            aria-label="Chat options"
           />
           <MenuList>
-            {receiver.isGroup ? (
+            {receiver?.isGroup ? (
               <>
-                <MenuItem onClick={handleExitGroup}>Exit Group</MenuItem>
-                <MenuItem onClick={handleDeleteGroup} color="red.500">
+                <MenuItem color="red.500" onClick={handleExitGroup}>
+                  Exit Group
+                </MenuItem>
+                <MenuItem color="red.500" onClick={handleDeleteChat}>
                   Delete Group
                 </MenuItem>
               </>
             ) : (
-              !receiver.email?.endsWith("bot") && (
-                <MenuItem onClick={handleDeleteChat} color="red.500">
-                  Delete Chat
-                </MenuItem>
-              )
+              <MenuItem color="red.500" onClick={handleDeleteChat}>
+                Delete Chat
+              </MenuItem>
             )}
           </MenuList>
         </Menu>
-      </Flex>
+      )}
 
-      <ProfileModal isOpen={isOpen} onClose={onClose} user={receiver} />
+      <ProfileModal
+        isOpen={isOpen}
+        onClose={onClose}
+        user={receiver}
+        setUser={setReceiver}
+      />
     </>
   );
 };

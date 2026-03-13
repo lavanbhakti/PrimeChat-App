@@ -1,3 +1,14 @@
+/**
+ * PrimeChat Profile Modal Component
+ * 
+ * Displays user or group profile information in a modal dialog.
+ * For the current user, provides edit functionality for name, about,
+ * password, and profile picture. For groups, shows member count
+ * and allows changing the group avatar.
+ * 
+ * @module ProfileModal
+ */
+
 import React, { useState, useContext, useEffect } from "react";
 import {
   Modal,
@@ -22,40 +33,44 @@ import {
   useDisclosure,
 } from "@chakra-ui/react";
 import { ChevronDownIcon, ChevronUpIcon, EditIcon } from "@chakra-ui/icons";
-import chatContext from "../../context/chatContext";
+import primeChatContext from "../../context/chatContext";
 import _isEqual from "lodash/isEqual";
 import { useToast } from "@chakra-ui/react";
 import ProfilePictureUpload from "./ProfilePictureUpload";
 
 export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
-  const context = useContext(chatContext);
-  const { hostName, receiver, setReceiver } = context;
-  const [editing, setEditing] = useState(false);
-  const [editedUser, setEditedUser] = useState(user);
-  const [showEditIcon, setShowEditIcon] = useState(false);
-  const [showchangepassword, setshowchangepassword] = useState(false);
+  const appContext = useContext(primeChatContext);
+  const { hostName, receiver, setReceiver } = appContext;
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [editableProfile, setEditableProfile] = useState(user);
+  const [isEditIconVisible, setIsEditIconVisible] = useState(false);
+  const [isPasswordSectionOpen, setIsPasswordSectionOpen] = useState(false);
   const {
-    isOpen: isPictureModalOpen,
-    onOpen: onPictureModalOpen,
-    onClose: onPictureModalClose
+    isOpen: isPictureUploadOpen,
+    onOpen: openPictureUpload,
+    onClose: closePictureUpload,
   } = useDisclosure();
 
   const toast = useToast();
-  const isOwnProfile = user._id === context.user?._id;
+  const isViewingOwnProfile = user._id === appContext.user?._id;
   const isGroupProfile = user.isGroup || false;
 
+  // Sync editable profile when the source user data changes
   useEffect(() => {
-    if (!_isEqual(user, editedUser)) {
-      setEditedUser(user);
+    if (!_isEqual(user, editableProfile)) {
+      setEditableProfile(user);
     }
   }, [user]);
 
-  const handleSave = async () => {
+  /**
+   * Saves profile changes to the server and updates local state.
+   */
+  const saveProfileChanges = async () => {
     try {
-      setUser && setUser(editedUser);
-    } catch (error) { }
+      setUser && setUser(editableProfile);
+    } catch (err) { }
 
-    context.setUser(editedUser);
+    appContext.setUser(editableProfile);
 
     try {
       const response = await fetch(`${hostName}/user/update`, {
@@ -64,63 +79,55 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
           "Content-Type": "application/json",
           "auth-token": localStorage.getItem("token"),
         },
-        body: JSON.stringify(editedUser),
+        body: JSON.stringify(editableProfile),
       });
 
-      const json = await response.json();
+      const responseData = await response.json();
 
       if (response.status !== 200) {
         toast({
           title: "An error occurred.",
-          description: json.error,
+          description: responseData.error,
           status: "error",
           duration: 5000,
           isClosable: true,
         });
       } else {
         toast({
-          title: "User updated",
-          description: "User updated successfully",
+          title: "Profile updated",
+          description: "Your profile was updated successfully",
           status: "success",
           duration: 5000,
           isClosable: true,
         });
-        setEditing(false);
+        setIsEditMode(false);
       }
-    } catch (error) {
-      console.log(error);
+    } catch (saveError) {
+      console.log("Profile save error:", saveError);
     }
   };
 
-  const handleEdit = () => {
-    setEditing(true);
+  const enterEditMode = () => {
+    setIsEditMode(true);
   };
 
-  const handleChange = (e) => {
+  const handleFieldChange = (e) => {
     const { name, value } = e.target;
-    setEditedUser({ ...editedUser, [name]: value });
+    setEditableProfile({ ...editableProfile, [name]: value });
   };
 
-  const handleMouseOver = () => {
-    setShowEditIcon(true);
-  };
-
-  const handleMouseOut = () => {
-    setShowEditIcon(false);
-  };
-
-  const handlePictureUploadSuccess = (imageUrl, updatedData) => {
+  /**
+   * Handles successful profile/group picture upload.
+   * Updates the relevant context state and refreshes chat list data.
+   */
+  const onPictureUploadComplete = (newImageUrl, updatedData) => {
     if (isGroupProfile) {
-      // Update group picture
-      setReceiver && setReceiver({ ...receiver, profilePic: imageUrl });
-      // Refresh chat list to show updated group picture
-      context.fetchData && context.fetchData();
+      setReceiver && setReceiver({ ...receiver, profilePic: newImageUrl });
+      appContext.fetchData && appContext.fetchData();
     } else {
-      // Update user picture
-      setEditedUser({ ...editedUser, profilePic: imageUrl });
-      context.setUser({ ...context.user, profilePic: imageUrl });
-      // Refresh chat list to show updated profile picture
-      context.fetchData && context.fetchData();
+      setEditableProfile({ ...editableProfile, profilePic: newImageUrl });
+      appContext.setUser({ ...appContext.user, profilePic: newImageUrl });
+      appContext.fetchData && appContext.fetchData();
     }
   };
 
@@ -134,13 +141,13 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
               <Text fontSize="xl" fontWeight="bold">
                 {isGroupProfile ? "Group Info" : "Profile"}
               </Text>
-              {isOwnProfile && !isGroupProfile && (
+              {isViewingOwnProfile && !isGroupProfile && (
                 <IconButton
                   aria-label="Edit profile"
                   icon={<EditIcon />}
                   variant="ghost"
                   colorScheme="purple"
-                  onClick={handleEdit}
+                  onClick={enterEditMode}
                 />
               )}
             </Flex>
@@ -150,10 +157,11 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
             <Tabs
               isFitted
               variant="enclosed"
-              index={editing ? 1 : 0}
-              onChange={(index) => setEditing(index === 1)}
+              index={isEditMode ? 1 : 0}
+              onChange={(index) => setIsEditMode(index === 1)}
             >
               <TabPanels>
+                {/* View Mode */}
                 <TabPanel>
                   <Stack spacing={2}>
                     <Box position="relative" mx="auto" w="fit-content">
@@ -164,7 +172,7 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
                         alt={user.name}
                         mx="auto"
                       />
-                      {(isOwnProfile || isGroupProfile) && (
+                      {(isViewingOwnProfile || isGroupProfile) && (
                         <IconButton
                           icon={<EditIcon />}
                           colorScheme="purple"
@@ -173,7 +181,7 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
                           position="absolute"
                           bottom={0}
                           right={0}
-                          onClick={onPictureModalOpen}
+                          onClick={openPictureUpload}
                           aria-label="Change picture"
                         />
                       )}
@@ -194,13 +202,15 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
                     )}
                   </Stack>
                 </TabPanel>
+
+                {/* Edit Mode */}
                 <TabPanel>
                   <Stack spacing={4}>
                     <Circle
                       cursor="pointer"
-                      onMouseOver={handleMouseOver}
-                      onMouseOut={handleMouseOut}
-                      onClick={onPictureModalOpen}
+                      onMouseOver={() => setIsEditIconVisible(true)}
+                      onMouseOut={() => setIsEditIconVisible(false)}
+                      onClick={openPictureUpload}
                     >
                       <Image
                         borderRadius="full"
@@ -209,7 +219,7 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
                         alt="profile-pic"
                         mx="auto"
                       />
-                      {showEditIcon && (
+                      {isEditIconVisible && (
                         <Box
                           textAlign={"center"}
                           position="absolute"
@@ -227,39 +237,39 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
                     <Input
                       name="name"
                       placeholder="Name"
-                      value={editedUser.name}
-                      onChange={handleChange}
+                      value={editableProfile.name}
+                      onChange={handleFieldChange}
                     />
                     <Input
                       name="about"
                       placeholder="about"
-                      value={editedUser.about}
-                      onChange={handleChange}
+                      value={editableProfile.about}
+                      onChange={handleFieldChange}
                     />
                     <Button
-                      onClick={() => setshowchangepassword(!showchangepassword)}
+                      onClick={() => setIsPasswordSectionOpen(!isPasswordSectionOpen)}
                     >
                       change my password{" "}
-                      {showchangepassword ? (
+                      {isPasswordSectionOpen ? (
                         <ChevronUpIcon />
                       ) : (
                         <ChevronDownIcon />
                       )}
                     </Button>
-                    {showchangepassword && (
+                    {isPasswordSectionOpen && (
                       <Box>
                         <Input
                           name="oldpassword"
                           placeholder="old password"
                           type="password"
-                          onChange={handleChange}
+                          onChange={handleFieldChange}
                           mb={2}
                         />
                         <Input
                           name="newpassword"
                           placeholder="new password"
                           type="password"
-                          onChange={handleChange}
+                          onChange={handleFieldChange}
                         />
                       </Box>
                     )}
@@ -269,31 +279,31 @@ export const ProfileModal = ({ isOpen, onClose, user, setUser }) => {
             </Tabs>
           </ModalBody>
           <ModalFooter>
-            {editing ? (
-              <Button colorScheme="purple" mr={3} onClick={handleSave}>
+            {isEditMode ? (
+              <Button colorScheme="purple" mr={3} onClick={saveProfileChanges}>
                 Save
               </Button>
             ) : (
               <Button
                 colorScheme="purple"
-                display={isOwnProfile ? "block" : "none"}
+                display={isViewingOwnProfile ? "block" : "none"}
                 mr={3}
-                onClick={handleEdit}
+                onClick={enterEditMode}
               >
                 Edit
               </Button>
             )}
-            {editing && <Button onClick={() => setEditing(false)}>Back</Button>}
+            {isEditMode && <Button onClick={() => setIsEditMode(false)}>Back</Button>}
           </ModalFooter>
         </ModalContent>
       </Modal>
 
       {/* Profile/Group Picture Upload Modal */}
       <ProfilePictureUpload
-        isOpen={isPictureModalOpen}
-        onClose={onPictureModalClose}
+        isOpen={isPictureUploadOpen}
+        onClose={closePictureUpload}
         currentPicture={user.profilePic || "https://via.placeholder.com/150"}
-        onUploadSuccess={handlePictureUploadSuccess}
+        onUploadSuccess={onPictureUploadComplete}
         hostName={hostName}
         isGroup={isGroupProfile}
         conversationId={user._id}

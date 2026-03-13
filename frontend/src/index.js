@@ -1,3 +1,13 @@
+/**
+ * PrimeChat Application Entry Point
+ * 
+ * Configures React Router, Chakra UI provider, and the global
+ * PrimeChatProvider context. Defines the root route structure
+ * with Home (landing/auth) and Dashboard pages.
+ * 
+ * @module AppEntry
+ */
+
 import React from "react";
 import ReactDOM from "react-dom/client";
 import "./index.css";
@@ -5,24 +15,23 @@ import App from "./App";
 import reportWebVitals from "./reportWebVitals";
 import { ChakraProvider } from "@chakra-ui/react";
 import { Outlet } from "react-router-dom";
-
 import { createBrowserRouter, RouterProvider } from "react-router-dom";
 import Home from "./components/Home";
 import Dashboard from "./components/Dashboard/Dashboard";
-import ChatState from "./context/appState";
+import PrimeChatProvider from "./context/appState";
 
-const token = localStorage.getItem("token");
+const storedAuthToken = localStorage.getItem("token");
 
-const router = createBrowserRouter([
+const appRouter = createBrowserRouter([
   {
     path: "/",
     element: (
-      <ChatState>
+      <PrimeChatProvider>
         <ChakraProvider>
-          <App token={token} />
+          <App token={storedAuthToken} />
           <Outlet />
         </ChakraProvider>
-      </ChatState>
+      </PrimeChatProvider>
     ),
     children: [
       {
@@ -37,14 +46,11 @@ const router = createBrowserRouter([
   },
 ]);
 
-const root = ReactDOM.createRoot(document.getElementById("root"));
-root.render(
+const rootElement = ReactDOM.createRoot(document.getElementById("root"));
+rootElement.render(
   <React.StrictMode>
-    <RouterProvider router={router} />
+    <RouterProvider router={appRouter} />
   </React.StrictMode>
 );
 
-// If you want to start measuring performance in your app, pass a function
-// to log results (for example: reportWebVitals(console.log))
-// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
 reportWebVitals();

@@ -1,30 +1,53 @@
-import { Tabs, TabList, TabPanels, Tab, TabPanel } from "@chakra-ui/react";
+/**
+ * PrimeChat Authentication Container
+ * 
+ * Renders tabbed Login and Signup forms within a centered card layout.
+ * Manages tab switching between the two authentication flows.
+ * 
+ * @module AuthContainer
+ */
+
+import React from "react";
+import {
+  Tab,
+  TabList,
+  TabPanel,
+  TabPanels,
+  Tabs,
+  Box,
+} from "@chakra-ui/react";
 import Login from "./Login";
 import Signup from "./Signup";
-import React from "react";
 
-const Auth = (props) => {
-  const [activetab, setactivetab] = React.useState(props.tabindex);
-
-  const handleTabsChange = (index) => {
-    setactivetab(index);
-  };
-
+const Auth = ({ selectedAuthTab, setSelectedAuthTab }) => {
   return (
-    <Tabs isFitted variant="enclosed" index={activetab} colorScheme="purple">
-      <TabList mb="2em">
-        <Tab onClick={() => handleTabsChange(0)}>Login</Tab>
-        <Tab onClick={() => handleTabsChange(1)}>Sign Up</Tab>
-      </TabList>
-      <TabPanels>
-        <TabPanel p={0}>
-          <Login handleTabsChange={handleTabsChange} />
-        </TabPanel>
-        <TabPanel>
-          <Signup handleTabsChange={handleTabsChange} />
-        </TabPanel>
-      </TabPanels>
-    </Tabs>
+    <Box
+      w={{ base: "90%", md: "400px" }}
+      p={5}
+      borderWidth="1px"
+      borderRadius="lg"
+    >
+      <Tabs
+        isFitted
+        variant="enclosed"
+        colorScheme="purple"
+        index={selectedAuthTab}
+        onChange={(tabIndex) => setSelectedAuthTab(tabIndex)}
+      >
+        <TabList>
+          <Tab>Login</Tab>
+          <Tab>Sign Up</Tab>
+        </TabList>
+        <TabPanels>
+          <TabPanel>
+            <Login />
+          </TabPanel>
+          <TabPanel>
+            <Signup />
+          </TabPanel>
+        </TabPanels>
+      </Tabs>
+    </Box>
   );
 };
 

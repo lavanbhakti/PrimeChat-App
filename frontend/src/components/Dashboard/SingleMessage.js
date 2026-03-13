@@ -1,3 +1,13 @@
+/**
+ * PrimeChat Single Message Bubble
+ * 
+ * Renders an individual chat message with support for text, images,
+ * read receipts, reactions, replies, copy/delete actions,
+ * and hover-based action buttons.
+ * 
+ * @module SingleMessage
+ */
+
 import React, { useState } from "react";
 import {
   Box,
@@ -24,19 +34,22 @@ const SingleMessage = ({
   removeMessageFromList,
   toast,
 }) => {
-  const isSender = message.senderId === user._id;
-  const messageDate = new Date(message.createdAt);
-  const messageTime = `${messageDate.getHours().toString().padStart(2, '0')}:${messageDate.getMinutes().toString().padStart(2, '0')}`;
+  const isSentByCurrentUser = message.senderId === user._id;
+  const messageTimestamp = new Date(message.createdAt);
+  const formattedTime = `${messageTimestamp.getHours().toString().padStart(2, '0')}:${messageTimestamp.getMinutes().toString().padStart(2, '0')}`;
 
-  const [isHovered, setIsHovered] = useState(false);
+  const [isMessageHovered, setIsMessageHovered] = useState(false);
 
   const {
-    isOpen: isDeleteModalOpen,
-    onOpen: onOpenDeleteModal,
-    onClose: onCloseDeleteModal,
+    isOpen: isDeleteDialogOpen,
+    onOpen: openDeleteDialog,
+    onClose: closeDeleteDialog,
   } = useDisclosure();
 
-  const handleCopy = () => {
+  /**
+   * Copies the message text content to the system clipboard.
+   */
+  const copyMessageToClipboard = () => {
     if (!message.text) return;
     navigator.clipboard.writeText(message.text).then(() => {
       toast({
@@ -50,41 +63,45 @@ const SingleMessage = ({
     });
   };
 
-  const handleDeleteMessage = async (deletefrom) => {
-    // Remove message from UI
+  /**
+   * Handles message deletion — removes from UI and emits socket event.
+   * @param {number} deleteScope - 1 for self-only, 2 for everyone
+   */
+  const removeMessage = async (deleteScope) => {
     removeMessageFromList(message._id);
-    onCloseDeleteModal();
+    closeDeleteDialog();
 
-    const deleteFrom = [user._id];
-    if (deletefrom === 2) {
-      deleteFrom.push(receiver._id);
+    const affectedUsers = [user._id];
+    if (deleteScope === 2) {
+      affectedUsers.push(receiver._id);
     }
 
-    const data = {
+    const deletionPayload = {
       messageId: message._id,
       conversationId: activeChatId,
-      deleteFrom,
+      deleteFrom: affectedUsers,
     };
 
-    socket.emit("delete-message", data);
+    socket.emit("delete-message", deletionPayload);
   };
 
   return (
     <>
       <Flex
-        justify={isSender ? "end" : "start"}
+        justify={isSentByCurrentUser ? "end" : "start"}
         mx={2}
-        onMouseEnter={() => setIsHovered(true)}
-        onMouseLeave={() => setIsHovered(false)}
+        onMouseEnter={() => setIsMessageHovered(true)}
+        onMouseLeave={() => setIsMessageHovered(false)}
       >
-        {isSender && isHovered && (
+        {/* Sender-side action buttons (copy + delete) */}
+        {isSentByCurrentUser && isMessageHovered && (
           <Box margin={2} display="flex">
             <Tooltip label="Copy" placement="top">
               <Button
                 size="sm"
                 variant="ghost"
                 mr={2}
-                onClick={handleCopy}
+                onClick={copyMessageToClipboard}
                 borderRadius="md"
               >
                 <CopyIcon />
@@ -97,7 +114,7 @@ const SingleMessage = ({
                 variant="ghost"
                 onClick={(e) => {
                   e.preventDefault();
-                  onOpenDeleteModal();
+                  openDeleteDialog();
                 }}
                 borderRadius="md"
               >
@@ -107,7 +124,8 @@ const SingleMessage = ({
           </Box>
         )}
         <Flex maxW="100%" position="relative">
-          {!isSender && receiver?.profilePic && (
+          {/* Receiver avatar for non-sender messages */}
+          {!isSentByCurrentUser && receiver?.profilePic && (
             <Image
               borderRadius="50%"
               src={receiver.profilePic}
@@ -120,33 +138,36 @@ const SingleMessage = ({
           )}
 
           <Stack spacing={0} position="relative">
+            {/* Reply indicator */}
             {message.replyto && (
               <Box
                 my={1}
                 p={2}
                 borderRadius={10}
-                bg={isSender ? "purple.200" : "blue.200"}
+                bg={isSentByCurrentUser ? "purple.200" : "blue.200"}
                 mx={2}
                 color="white"
                 w="max-content"
                 maxW="55vw"
-                alignSelf={isSender ? "flex-end" : "flex-start"}
+                alignSelf={isSentByCurrentUser ? "flex-end" : "flex-start"}
               >
                 reply to
               </Box>
             )}
 
+            {/* Message bubble */}
             <Box
-              alignSelf={isSender ? "flex-end" : "flex-start"}
+              alignSelf={isSentByCurrentUser ? "flex-end" : "flex-start"}
               position="relative"
               my={1}
               p={2}
               borderRadius={10}
-              bg={isSender ? "purple.300" : "blue.300"}
+              bg={isSentByCurrentUser ? "purple.300" : "blue.300"}
               color="white"
               w="max-content"
               maxW="60vw"
             >
+              {/* Attached image */}
               {message.imageUrl && (
                 <Image
                   src={message.imageUrl}
@@ -161,6 +182,7 @@ const SingleMessage = ({
                   loading="lazy"
                 />
               )}
+              {/* Message text with markdown support */}
               {message.text && (
                 <Text
                   wordBreak="break-word"
@@ -168,14 +190,15 @@ const SingleMessage = ({
                   dangerouslySetInnerHTML={markdownToHtml(message.text)}
                 ></Text>
               )}
+              {/* Timestamp and read receipt */}
               <Flex justify="end" align="center" mt={1} gap={1}>
                 <Text align="end" fontSize="11px" color="whiteAlpha.700" fontWeight="medium">
-                  {messageTime}
+                  {formattedTime}
                 </Text>
 
-                {isSender &&
+                {isSentByCurrentUser &&
                   message.seenBy?.find(
-                    (element) => element.user === receiver._id
+                    (entry) => entry.user === receiver._id
                   ) && (
                     <Circle ml={1} fontSize="x-small" color="green.100">
                       <CheckCircleIcon />
@@ -183,11 +206,12 @@ const SingleMessage = ({
                   )}
               </Flex>
 
+              {/* Emoji reaction badge */}
               {message.reaction && (
                 <Box
                   fontSize="xs"
                   position="absolute"
-                  bg={isSender ? "purple.300" : "blue.300"}
+                  bg={isSentByCurrentUser ? "purple.300" : "blue.300"}
                   bottom={-1}
                   left={-1}
                   borderRadius="lg"
@@ -196,15 +220,15 @@ const SingleMessage = ({
                 </Box>
               )}
 
-              {/* Hover controls */}
-              {!isSender && isHovered && (
+              {/* Receiver-side copy button */}
+              {!isSentByCurrentUser && isMessageHovered && (
                 <Box position="absolute" top="0" right="-50px" display="flex">
                   <Tooltip label="Copy" placement="top">
                     <Button
                       size="sm"
                       variant="ghost"
                       mr={2}
-                      onClick={handleCopy}
+                      onClick={copyMessageToClipboard}
                       borderRadius="md"
                     >
                       <CopyIcon />
@@ -218,9 +242,9 @@ const SingleMessage = ({
       </Flex>
 
       <DeleteMessageModal
-        isOpen={isDeleteModalOpen}
-        handleDeleteMessage={handleDeleteMessage}
-        onClose={onCloseDeleteModal}
+        isOpen={isDeleteDialogOpen}
+        handleDeleteMessage={removeMessage}
+        onClose={closeDeleteDialog}
       />
     </>
   );

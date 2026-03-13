@@ -1,5 +1,13 @@
-import React from "react";
+/**
+ * PrimeChat Delete Message Confirmation Dialog
+ * 
+ * Presents options to delete a message either for the current user only
+ * ("Delete from Me") or for all conversation participants ("Delete from everyone").
+ * 
+ * @module DeleteMessageModal
+ */
 
+import React from "react";
 import {
   Modal,
   ModalOverlay,

@@ -1,3 +1,12 @@
+/**
+ * PrimeChat New Contacts Component
+ * 
+ * Displays users who haven't been added as chat contacts yet.
+ * Supports searching available users and creating new 1-to-1 or group conversations.
+ * 
+ * @module NewChats
+ */
+
 import React from "react";
 import { useEffect } from "react";
 import { useState } from "react";
@@ -19,15 +28,15 @@ import {
   Search2Icon,
 } from "@chakra-ui/icons";
 import { useContext } from "react";
-import chatContext from "../../context/chatContext";
+import primeChatContext from "../../context/chatContext";
 import GroupModal from "../miscellaneous/GroupModal";
 
 const NewChats = (props) => {
-  const [data, setData] = useState([]);
-  const [users, setUsers] = useState(data);
-  const [allUsers, setAllUsers] = useState([]); // All users for group creation
+  const [contactsList, setContactsList] = useState([]);
+  const [filteredContacts, setFilteredContacts] = useState(contactsList);
+  const [allRegisteredUsers, setAllRegisteredUsers] = useState([]);
   const { isOpen, onOpen, onClose } = useDisclosure();
-  const context = useContext(chatContext);
+  const appContext = useContext(primeChatContext);
   const {
     hostName,
     socket,
@@ -36,9 +45,12 @@ const NewChats = (props) => {
     setMyChatList,
     setReceiver,
     setActiveChatId,
-  } = context;
+  } = appContext;
 
-  const fetchNonFriendsList = async () => {
+  /**
+   * Fetches users who don't yet have a conversation with the current user.
+   */
+  const loadAvailableContacts = async () => {
     try {
       const response = await fetch(`${hostName}/user/non-friends`, {
         method: "GET",
@@ -48,17 +60,20 @@ const NewChats = (props) => {
         },
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch data");
+        throw new Error("Failed to load contacts");
       }
-      const jsonData = await response.json();
-      setData(jsonData);
-      setUsers(jsonData);
-    } catch (error) {
-      console.log(error);
+      const availableUsers = await response.json();
+      setContactsList(availableUsers);
+      setFilteredContacts(availableUsers);
+    } catch (fetchError) {
+      console.log("Contact fetch error:", fetchError);
     }
   };
 
-  const fetchAllUsers = async () => {
+  /**
+   * Fetches all registered users for group creation member selection.
+   */
+  const loadAllRegisteredUsers = async () => {
     try {
       const response = await fetch(`${hostName}/user/all-users`, {
         method: "GET",
@@ -68,39 +83,45 @@ const NewChats = (props) => {
         },
       });
       if (!response.ok) {
-        throw new Error("Failed to fetch all users");
+        throw new Error("Failed to load user list");
       }
-      const jsonData = await response.json();
-      // Filter out current user
-      const filteredUsers = jsonData.filter((u) => u._id !== user._id);
-      setAllUsers(filteredUsers);
-    } catch (error) {
-      console.log("Error fetching all users:", error);
+      const userData = await response.json();
+      const otherUsers = userData.filter((u) => u._id !== user._id);
+      setAllRegisteredUsers(otherUsers);
+    } catch (fetchError) {
+      console.log("User list fetch error:", fetchError);
     }
   };
 
   useEffect(() => {
-    async function fetchList() {
-      await fetchNonFriendsList();
-      await fetchAllUsers(); // Fetch all users for group creation
+    async function initializeContactLists() {
+      await loadAvailableContacts();
+      await loadAllRegisteredUsers();
     }
-    fetchList();
+    initializeContactLists();
   }, [myChatList]);
 
-  const handleUserSearch = async (e) => {
+  /**
+   * Filters the available contacts list by name search query.
+   */
+  const filterContactsByName = async (e) => {
     if (e.target.value !== "") {
-      const newusers = data.filter((user) =>
-        user.name.toLowerCase().includes(e.target.value.toLowerCase())
+      const matchingContacts = contactsList.filter((contact) =>
+        contact.name.toLowerCase().includes(e.target.value.toLowerCase())
       );
-      setUsers(newusers);
+      setFilteredContacts(matchingContacts);
     } else {
-      setUsers(data);
+      setFilteredContacts(contactsList);
     }
   };
 
-  const handleNewChat = async (e, receiverid) => {
+  /**
+   * Creates a new 1-to-1 conversation with the selected user.
+   * Joins the socket room and switches to the new chat.
+   */
+  const startNewConversation = async (e, recipientId) => {
     e.preventDefault();
-    const payload = { members: [user._id, receiverid] };
+    const conversationPayload = { members: [user._id, recipientId] };
     try {
       const response = await fetch(`${hostName}/conversation/`, {
         method: "POST",
@@ -108,27 +129,29 @@ const NewChats = (props) => {
           "Content-Type": "application/json",
           "auth-token": localStorage.getItem("token"),
         },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(conversationPayload),
       });
 
       if (!response.ok) {
-        throw new Error("Failed to fetch data");
+        throw new Error("Failed to create conversation");
       }
-      const data = await response.json();
+      const newConversation = await response.json();
 
-      setMyChatList([data, ...myChatList]);
-      setReceiver(data.members[0]);
-      setActiveChatId(data._id);
+      setMyChatList([newConversation, ...myChatList]);
+      setReceiver(newConversation.members[0]);
+      setActiveChatId(newConversation._id);
       props.setactiveTab(0);
 
       socket.emit("join-chat", {
-        roomId: data._id,
+        roomId: newConversation._id,
         userId: user._id,
       });
 
-      setUsers((users) => users.filter((user) => user._id !== receiverid));
-    } catch (error) {
-      console.log(error);
+      setFilteredContacts((current) =>
+        current.filter((contact) => contact._id !== recipientId)
+      );
+    } catch (createError) {
+      console.log("Conversation creation error:", createError);
     }
   };
 
@@ -148,7 +171,7 @@ const NewChats = (props) => {
               <Input
                 type="text"
                 placeholder="Enter Name"
-                onChange={handleUserSearch}
+                onChange={filterContactsByName}
                 id="search-input"
               />
             </InputGroup>
@@ -177,20 +200,20 @@ const NewChats = (props) => {
         <Button my={2} mx={2} colorScheme="purple" onClick={onOpen}>
           Create New Group <AddIcon ml={2} fontSize={"12px"} />
         </Button>
-        {users.map(
-          (user) =>
-            user._id !== context.user._id && (
-              <Flex key={user._id} p={2}>
+        {filteredContacts.map(
+          (contact) =>
+            contact._id !== appContext.user._id && (
+              <Flex key={contact._id} p={2}>
                 <Button
                   h={"4em"}
                   w={"100%"}
                   justifyContent={"space-between"}
-                  onClick={(e) => handleNewChat(e, user._id)}
+                  onClick={(e) => startNewConversation(e, contact._id)}
                 >
                   <Flex>
                     <Box>
                       <img
-                        src={user.profilePic}
+                        src={contact.profilePic}
                         alt="profile"
                         style={{
                           width: "40px",
@@ -201,10 +224,10 @@ const NewChats = (props) => {
                     </Box>
                     <Box mx={3} textAlign={"start"}>
                       <Text fontSize={"lg"} fontWeight={"bold"}>
-                        {user.name}
+                        {contact.name}
                       </Text>
                       <Text fontSize={"sm"} color={"gray.500"}>
-                        {user.phoneNum}
+                        {contact.phoneNum}
                       </Text>
                     </Box>
                   </Flex>
@@ -219,7 +242,7 @@ const NewChats = (props) => {
       <GroupModal
         isOpen={isOpen}
         onClose={onClose}
-        users={allUsers}
+        users={allRegisteredUsers}
         hostName={hostName}
         user={user}
         setMyChatList={setMyChatList}

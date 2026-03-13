@@ -1,15 +1,26 @@
+/**
+ * PrimeChat Authentication Controller
+ * 
+ * Handles user registration, login (password + OTP), session validation,
+ * profile updates, user discovery, and email-based OTP verification.
+ * On registration, an AI chatbot companion is automatically created.
+ * 
+ * @module AuthController
+ */
+
 const User = require("../Models/User.js");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-
 const Conversation = require("../Models/Conversation.js");
 const ObjectId = require("mongoose").Types.ObjectId;
 const nodemailer = require("nodemailer");
 const dotenv = require("dotenv");
+
 dotenv.config({ path: "./.env" });
 const { JWT_SECRET } = require("../secrets.js");
 
-let mailTransporter = nodemailer.createTransport({
+/** SMTP transport for sending verification emails via Gmail */
+const emailTransporter = nodemailer.createTransport({
   service: "gmail",
   auth: {
     user: process.env.EMAIL,
@@ -17,403 +28,457 @@ let mailTransporter = nodemailer.createTransport({
   },
 });
 
-// In-memory store for signup OTPs: { email: { otp, expiry } }
-const signupOtpStore = {};
+/**
+ * In-memory store for signup OTPs.
+ * Structure: { [email]: { otp: string, expiry: number } }
+ * Auto-cleaned after 5 minutes per entry.
+ */
+const pendingSignupOtps = {};
 
-const register = async (req, res) => {
+/**
+ * Generates a cryptographically random 6-digit OTP string.
+ * @returns {string} Six-digit numeric code
+ */
+function generateSecureOtp() {
+  return Math.floor(100000 + Math.random() * 900000).toString();
+}
+
+/**
+ * Builds an HTML email template for OTP delivery.
+ * @param {string} otpCode - The OTP to embed in the email
+ * @param {string} purpose - Either "login" or "signup"
+ * @returns {string} Complete HTML email body
+ */
+function buildOtpEmailTemplate(otpCode, purpose) {
+  const headingText =
+    purpose === "signup"
+      ? "PrimeChat - Signup Verification"
+      : "PrimeChat - Login Verification";
+
+  const instructionText =
+    purpose === "signup"
+      ? "Use this OTP to complete your signup. It expires in 5 minutes."
+      : "Use this OTP to log in to your account.";
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>${headingText}</title>
+  <style>
+    .otp-container { width: 50%; margin: 0 auto; background: #f4f4f4; padding: 20px; border-radius: 8px; }
+    h1 { text-align: center; color: #6b46c1; }
+    .otp-code { font-size: 24px; letter-spacing: 4px; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <strong><h1>${headingText}</h1></strong>
+  <div class="otp-container">
+    <h2>Your Verification Code</h2>
+    <p class="otp-code">${otpCode}</p>
+    <p>${instructionText}</p>
+  </div>
+</body>
+</html>`;
+}
+
+/**
+ * Sends a standardized JSON response.
+ * @param {import('express').Response} res
+ * @param {number} statusCode
+ * @param {object} payload
+ */
+function sendResponse(res, statusCode, payload) {
+  return res.status(statusCode).json(payload);
+}
+
+/**
+ * POST /auth/register
+ * Creates a new user account with OTP verification, hashes the password,
+ * generates a default avatar, and creates an AI chatbot companion.
+ */
+const handleUserRegistration = async (req, res) => {
   try {
-    console.log("register request received");
+    console.log("Registration request received");
 
     const { name, email, password, otp } = req.body;
+
     if (!name || !email || !password || !otp) {
-      return res.status(400).json({
-        error: "Please fill all the fields and verify OTP",
+      return sendResponse(res, 400, {
+        error: "All fields are required including OTP verification",
       });
     }
 
-    // Verify signup OTP
-    const storedOtp = signupOtpStore[email.toLowerCase()];
-    if (!storedOtp || storedOtp.otp !== otp || Date.now() > storedOtp.expiry) {
-      return res.status(400).json({
-        error: "Invalid or expired OTP. Please request a new one.",
+    // Validate the signup OTP before proceeding
+    const storedOtpData = pendingSignupOtps[email.toLowerCase()];
+    if (!storedOtpData || storedOtpData.otp !== otp || Date.now() > storedOtpData.expiry) {
+      return sendResponse(res, 400, {
+        error: "Invalid or expired OTP. Please request a new verification code.",
       });
     }
-    // OTP is valid, remove it from store
-    delete signupOtpStore[email.toLowerCase()];
 
+    // OTP confirmed — remove from pending store
+    delete pendingSignupOtps[email.toLowerCase()];
+
+    // Prevent bot email suffix from being used for real accounts
     if (email.endsWith("bot")) {
-      return res.status(400).json({
-        error: "Invalid email",
-      });
+      return sendResponse(res, 400, { error: "Invalid email address format" });
     }
 
-    const user = await User.findOne({
-      email: email,
-    });
-
-    if (user) {
-      return res.status(400).json({
-        error: "User already exists",
-      });
+    // Check for duplicate email registration
+    const existingAccount = await User.findOne({ email });
+    if (existingAccount) {
+      return sendResponse(res, 400, { error: "An account with this email already exists" });
     }
-    var imageUrl = `https://ui-avatars.com/api/?name=${name}&background=random&bold=true`;
 
-    const salt = await bcrypt.genSalt(10);
-    const secPass = await bcrypt.hash(password, salt);
+    // Generate auto-avatar and hash the password
+    const avatarUrl = `https://ui-avatars.com/api/?name=${name}&background=random&bold=true`;
+    const passwordSalt = await bcrypt.genSalt(10);
+    const hashedPassword = await bcrypt.hash(password, passwordSalt);
 
-    const newUser = new User({
+    // Create the user account
+    const newAccount = new User({
       name,
       email,
-      password: secPass,
-      profilePic: imageUrl,
+      password: hashedPassword,
+      profilePic: avatarUrl,
       about: "Hello World!!",
     });
+    await newAccount.save();
 
-    await newUser.save();
-
-    const us = await User.findOne({ email: email });
-    us._id = new ObjectId();
-    us.name = "AI Chatbot";
-    us.email = email + "bot";
-    us.about = "I am an AI Chatbot to help you";
-    us.profilePic =
+    // Create an AI chatbot companion for the new user
+    const botAccountData = await User.findOne({ email });
+    botAccountData._id = new ObjectId();
+    botAccountData.name = "AI Chatbot";
+    botAccountData.email = email + "bot";
+    botAccountData.about = "I am an AI Chatbot to help you";
+    botAccountData.profilePic =
       "https://play-lh.googleusercontent.com/Oe0NgYQ63TGGEr7ViA2fGA-yAB7w2zhMofDBR3opTGVvsCFibD8pecWUjHBF_VnVKNdJ";
-    await User.insertMany(us);
+    await User.insertMany(botAccountData);
 
-    const bot = await User.findOne({ email: email + "bot" });
+    const botAccount = await User.findOne({ email: email + "bot" });
 
-    const newConversation = new Conversation({
-      members: [newUser._id, bot._id],
+    // Create an initial conversation between user and their AI bot
+    const botConversation = new Conversation({
+      members: [newAccount._id, botAccount._id],
     });
+    await botConversation.save();
 
-    await newConversation.save();
+    // Issue JWT authentication token
+    const tokenPayload = { user: { id: newAccount.id } };
+    const authToken = jwt.sign(tokenPayload, JWT_SECRET);
 
-    const data = {
-      user: {
-        id: newUser.id,
-      },
-    };
-
-    const authtoken = jwt.sign(data, JWT_SECRET);
-    res.json({
-      authtoken,
-    });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+    return sendResponse(res, 200, { authtoken: authToken });
+  } catch (registrationError) {
+    console.error("Registration error:", registrationError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const login = async (req, res) => {
-  console.log("login request received");
+/**
+ * POST /auth/login
+ * Authenticates via email+password or email+OTP.
+ * Returns a JWT token and user profile data on success.
+ */
+const handleUserLogin = async (req, res) => {
+  console.log("Login request received");
 
   try {
     const { email, password, otp } = req.body;
 
     if (!email || (!password && !otp)) {
-      return res.status(400).json({
-        error: "Please fill all the fields",
-      });
+      return sendResponse(res, 400, { error: "Please provide all required credentials" });
     }
 
-    const user = await User.findOne({
-      email: email,
-    });
-
-    if (!user) {
-      return res.status(400).json({
-        error: "Invalid Credentials",
-      });
+    const userAccount = await User.findOne({ email });
+    if (!userAccount) {
+      return sendResponse(res, 400, { error: "Invalid Credentials" });
     }
+
+    // OTP-based authentication flow
     if (otp) {
-      if (user.otp != otp) {
-        return res.status(400).json({
-          error: "Invalid otp",
-        });
+      if (userAccount.otp != otp) {
+        return sendResponse(res, 400, { error: "Invalid verification code" });
       }
-      user.otp = "";
-      await user.save();
+      userAccount.otp = "";
+      await userAccount.save();
     } else {
-      const passwordCompare = await bcrypt.compare(password, user.password);
-      if (!passwordCompare) {
-        return res.status(400).json({
-          error: "Invalid Credentials",
-        });
+      // Password-based authentication flow
+      const isPasswordValid = await bcrypt.compare(password, userAccount.password);
+      if (!isPasswordValid) {
+        return sendResponse(res, 400, { error: "Invalid Credentials" });
       }
     }
 
-    const data = {
-      user: {
-        id: user.id,
-      },
-    };
+    // Issue JWT authentication token
+    const tokenPayload = { user: { id: userAccount.id } };
+    const authToken = jwt.sign(tokenPayload, JWT_SECRET);
 
-    const authtoken = jwt.sign(data, JWT_SECRET);
-    res.json({
-      authtoken,
+    return sendResponse(res, 200, {
+      authtoken: authToken,
       user: {
-        _id: user.id,
-        name: user.name,
-        email: user.email,
-        profilePic: user.profilePic,
+        _id: userAccount.id,
+        name: userAccount.name,
+        email: userAccount.email,
+        profilePic: userAccount.profilePic,
       },
     });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+  } catch (loginError) {
+    console.error("Login error:", loginError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const authUser = async (req, res) => {
-  const token = req.header("auth-token");
-  if (!token) {
-    res.status(401).send("Please authenticate using a valid token");
+/**
+ * GET /auth/me
+ * Validates the current session by verifying the auth token
+ * and returns the authenticated user's profile (excluding password).
+ */
+const validateSession = async (req, res) => {
+  const authToken = req.header("auth-token");
+  if (!authToken) {
+    return sendResponse(res, 401, { error: "Authentication token required" });
   }
 
   try {
-    const data = jwt.verify(token, JWT_SECRET);
-
-    if (!data) {
-      return res.status(401).send("Please authenticate using a valid token");
+    const decodedPayload = jwt.verify(authToken, JWT_SECRET);
+    if (!decodedPayload) {
+      return sendResponse(res, 401, { error: "Invalid authentication token" });
     }
 
-    const user = await User.findById(data.user.id).select("-password");
-    res.json(user);
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+    const userProfile = await User.findById(decodedPayload.user.id).select("-password");
+    return res.json(userProfile);
+  } catch (sessionError) {
+    console.error("Session validation error:", sessionError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
+/**
+ * GET /user/non-friends
+ * Returns users who don't yet have a 1-to-1 conversation with
+ * the authenticated user (excludes bot accounts).
+ */
 const getNonFriendsList = async (req, res) => {
   try {
-    // find all friends(all other members in conversations) and user whose email not endswith bot
-    const conversations = await Conversation.find({
+    const existingConversations = await Conversation.find({
       members: { $in: [req.user.id] },
       isGroup: false,
     });
 
-    const users = await User.find({
-      _id: { $nin: conversations.flatMap((c) => c.members) },
+    // Collect all user IDs already in conversations with current user
+    const connectedUserIds = existingConversations.flatMap((conv) => conv.members);
+
+    const availableUsers = await User.find({
+      _id: { $nin: connectedUserIds },
       email: { $not: /bot$/ },
     });
 
-    res.json(users);
-  } catch (error) {
-    res.status(500).send("Internal Server Error");
+    return res.json(availableUsers);
+  } catch (queryError) {
+    console.error("Non-friends query error:", queryError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const updateprofile = async (req, res) => {
+/**
+ * PUT /user/update
+ * Updates the authenticated user's profile fields.
+ * Supports name, about, and password change (requires old password verification).
+ */
+const updateUserProfile = async (req, res) => {
   try {
-    const dbuser = await User.findById(req.user.id);
+    const currentUser = await User.findById(req.user.id);
 
+    // Handle password change if requested
     if (req.body.newpassword) {
-      const passwordCompare = await bcrypt.compare(
+      const isOldPasswordValid = await bcrypt.compare(
         req.body.oldpassword,
-        dbuser.password
+        currentUser.password
       );
-      if (!passwordCompare) {
-        return res.status(400).json({
-          error: "Invalid Credentials",
-        });
+
+      if (!isOldPasswordValid) {
+        return sendResponse(res, 400, { error: "Current password is incorrect" });
       }
 
-      const salt = await bcrypt.genSalt(10);
-      const secPass = await bcrypt.hash(req.body.newpassword, salt);
-      req.body.password = secPass;
+      const newSalt = await bcrypt.genSalt(10);
+      const newHashedPassword = await bcrypt.hash(req.body.newpassword, newSalt);
+      req.body.password = newHashedPassword;
 
       delete req.body.oldpassword;
       delete req.body.newpassword;
     }
+
     await User.findByIdAndUpdate(req.user.id, req.body);
-    res.status(200).json({ message: "Profile Updated" });
-  } catch (error) {
-    res.status(500).send("Internal Server Error");
+    return sendResponse(res, 200, { message: "Profile Updated" });
+  } catch (updateError) {
+    console.error("Profile update error:", updateError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const sendotp = async (req, res) => {
+/**
+ * POST /auth/getotp
+ * Sends a one-time password to the user's email for passwordless login.
+ * The OTP expires after 5 minutes.
+ */
+const dispatchLoginOtp = async (req, res) => {
   try {
-    console.log("sendotp request received");
-    const { email } = req.body;
-    const user = await User.findOne({ email: req.body.email });
-    if (!user) {
-      return res.status(400).json({
-        error: "User not found",
-      });
-    }
-    const otp = Math.floor(100000 + Math.random() * 900000);
-    user.otp = otp;
-    await user.save();
+    console.log("Login OTP request received");
 
-    //delete otp after 5 minutes
+    const { email } = req.body;
+    const userAccount = await User.findOne({ email });
+
+    if (!userAccount) {
+      return sendResponse(res, 400, { error: "No account found with this email" });
+    }
+
+    const otpCode = generateSecureOtp();
+    userAccount.otp = otpCode;
+    await userAccount.save();
+
+    // Schedule OTP expiration after 5 minutes
     setTimeout(() => {
-      user.otp = "";
-      user.save();
+      userAccount.otp = "";
+      userAccount.save();
     }, 300000);
 
-    let mailDetails = {
+    const emailPayload = {
       from: process.env.EMAIL,
       to: email,
-      subject: "Login with your Otp",
-
-      html: `<!DOCTYPE html>
-      <html lang="en">
-      <head>
-          <title>Otp for Login</title>
-          <style>
-              .container {
-                  width: 50%;
-                  margin: 0 auto;
-                  background: #f4f4f4;
-                  padding: 20px;
-              }
-              h1 {
-                  text-align: center;
-              }
-    
-          </style> 
-      </head>
-      <body>
-              <strong><h1>Prime-Chat - online chatting app</h1></strong>
-          <div class="container">
-              <h2>Your Otp is</h2>
-              <strong><p>${otp}</p><strong>
-              <p>Use this Otp to login</p>
-          </div>
-      </body>
-      </html>`,
+      subject: "PrimeChat - Login Verification Code",
+      html: buildOtpEmailTemplate(otpCode, "login"),
     };
 
-    await mailTransporter.sendMail(mailDetails, function (err, data) {
+    await emailTransporter.sendMail(emailPayload, function (err, _data) {
       if (err) {
-        console.log("Error Occurs", err);
-        res.status(400).json({ message: "Error Occurs" });
+        console.log("Email delivery error:", err);
+        return sendResponse(res, 400, { message: "Failed to send verification email" });
       } else {
-        console.log("Email sent successfully");
-        res.status(200).json({ message: "OTP sent" });
+        console.log("Login OTP email sent successfully");
+        return sendResponse(res, 200, { message: "OTP sent" });
       }
     });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+  } catch (otpError) {
+    console.error("OTP dispatch error:", otpError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const getAllUsers = async (req, res) => {
+/**
+ * GET /user/all-users
+ * Returns all registered users except bots and the current user.
+ * Used for group creation member selection.
+ */
+const fetchAllRegisteredUsers = async (req, res) => {
   try {
-    // Get all users except bots and the current user
-    const users = await User.find({
+    const allUsers = await User.find({
       _id: { $ne: req.user.id },
       email: { $not: /bot$/ },
     }).select("-password");
 
-    res.json(users);
-  } catch (error) {
-    console.error("Error in getAllUsers:", error);
-    res.status(500).send("Internal Server Error");
+    return res.json(allUsers);
+  } catch (fetchError) {
+    console.error("User fetch error:", fetchError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const sendSignupOtp = async (req, res) => {
+/**
+ * POST /auth/signup-otp
+ * Sends an OTP to verify email ownership during the signup flow.
+ * Stores the OTP in-memory with a 5-minute expiration.
+ */
+const dispatchSignupOtp = async (req, res) => {
   try {
-    console.log("sendSignupOtp request received");
+    console.log("Signup OTP request received");
+
     const { email } = req.body;
     if (!email) {
-      return res.status(400).json({ error: "Email is required" });
+      return sendResponse(res, 400, { error: "Email address is required" });
     }
 
-    // Check if user already exists
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(400).json({ error: "User already exists. Please login." });
+    // Prevent duplicate registrations
+    const existingAccount = await User.findOne({ email: email.toLowerCase() });
+    if (existingAccount) {
+      return sendResponse(res, 400, { error: "Account already exists. Please login instead." });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    signupOtpStore[email.toLowerCase()] = {
-      otp,
-      expiry: Date.now() + 5 * 60 * 1000, // 5 minutes
+    const otpCode = generateSecureOtp();
+    pendingSignupOtps[email.toLowerCase()] = {
+      otp: otpCode,
+      expiry: Date.now() + 5 * 60 * 1000,
     };
 
-    // Auto-cleanup after 5 minutes
+    // Schedule automatic cleanup after 5 minutes
     setTimeout(() => {
-      delete signupOtpStore[email.toLowerCase()];
+      delete pendingSignupOtps[email.toLowerCase()];
     }, 5 * 60 * 1000);
 
-    let mailDetails = {
+    const emailPayload = {
       from: process.env.EMAIL,
       to: email,
-      subject: "Signup OTP - PrimeChat",
-      html: `<!DOCTYPE html>
-      <html lang="en">
-      <head>
-          <title>Signup OTP</title>
-          <style>
-              .container { width: 50%; margin: 0 auto; background: #f4f4f4; padding: 20px; }
-              h1 { text-align: center; }
-          </style>
-      </head>
-      <body>
-              <strong><h1>PrimeChat - Signup Verification</h1></strong>
-          <div class="container">
-              <h2>Your OTP is</h2>
-              <strong><p style="font-size:24px;letter-spacing:4px;">${otp}</p></strong>
-              <p>Use this OTP to complete your signup. It expires in 5 minutes.</p>
-          </div>
-      </body>
-      </html>`,
+      subject: "PrimeChat - Signup Verification Code",
+      html: buildOtpEmailTemplate(otpCode, "signup"),
     };
 
-    await mailTransporter.sendMail(mailDetails, function (err, data) {
+    await emailTransporter.sendMail(emailPayload, function (err, _data) {
       if (err) {
-        console.log("Error sending signup OTP:", err);
-        res.status(400).json({ error: "Failed to send OTP" });
+        console.log("Signup OTP email error:", err);
+        return sendResponse(res, 400, { error: "Failed to send verification email" });
       } else {
         console.log("Signup OTP sent successfully");
-        res.status(200).json({ message: "OTP sent to your email" });
+        return sendResponse(res, 200, { message: "OTP sent to your email" });
       }
     });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+  } catch (signupOtpError) {
+    console.error("Signup OTP error:", signupOtpError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
-const verifySignupOtp = async (req, res) => {
+/**
+ * POST /auth/verify-signup-otp
+ * Verifies a signup OTP without consuming it, so the user can
+ * still submit the registration form with the same OTP.
+ */
+const confirmSignupOtp = async (req, res) => {
   try {
     const { email, otp } = req.body;
+
     if (!email || !otp) {
-      return res.status(400).json({ error: "Email and OTP are required" });
+      return sendResponse(res, 400, { error: "Email and verification code are required" });
     }
 
-    const storedOtp = signupOtpStore[email.toLowerCase()];
-    if (!storedOtp) {
-      return res.status(400).json({ error: "No OTP found. Please request a new one." });
-    }
-    if (Date.now() > storedOtp.expiry) {
-      delete signupOtpStore[email.toLowerCase()];
-      return res.status(400).json({ error: "OTP has expired. Please request a new one." });
-    }
-    if (storedOtp.otp !== otp) {
-      return res.status(400).json({ error: "Invalid OTP" });
+    const storedOtpData = pendingSignupOtps[email.toLowerCase()];
+
+    if (!storedOtpData) {
+      return sendResponse(res, 400, { error: "No pending verification. Please request a new code." });
     }
 
-    res.status(200).json({ message: "OTP verified successfully", verified: true });
-  } catch (error) {
-    console.error(error.message);
-    res.status(500).send("Internal Server Error");
+    if (Date.now() > storedOtpData.expiry) {
+      delete pendingSignupOtps[email.toLowerCase()];
+      return sendResponse(res, 400, { error: "Verification code has expired. Please request a new one." });
+    }
+
+    if (storedOtpData.otp !== otp) {
+      return sendResponse(res, 400, { error: "Incorrect verification code" });
+    }
+
+    return sendResponse(res, 200, { message: "Email verified successfully", verified: true });
+  } catch (verifyError) {
+    console.error("OTP verification error:", verifyError.message);
+    return sendResponse(res, 500, { error: "Internal Server Error" });
   }
 };
 
 module.exports = {
-  getAllUsers,
-  register,
-  login,
+  fetchAllRegisteredUsers,
+  handleUserRegistration,
+  handleUserLogin,
   getNonFriendsList,
-  authUser,
-  updateprofile,
-  sendotp,
-  sendSignupOtp,
-  verifySignupOtp,
+  validateSession,
+  updateUserProfile,
+  dispatchLoginOtp,
+  dispatchSignupOtp,
+  confirmSignupOtp,
 };

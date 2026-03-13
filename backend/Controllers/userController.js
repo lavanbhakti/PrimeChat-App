@@ -1,3 +1,13 @@
+/**
+ * PrimeChat User Management Controller
+ * 
+ * Handles user-related operations: S3 presigned URL generation for
+ * image uploads (chat, profile, group), profile picture updates,
+ * group picture updates, and online presence status queries.
+ * 
+ * @module UserController
+ */
+
 const {
   AWS_BUCKET_NAME,
   AWS_SECRET,
@@ -8,70 +18,89 @@ const { createPresignedPost } = require("@aws-sdk/s3-presigned-post");
 const User = require("../Models/User.js");
 const Conversation = require("../Models/Conversation.js");
 
-// Get presigned URL for uploading images (chat images, profile pics, group pics)
-const getPresignedUrl = async (req, res) => {
-  const filename = req.query.filename;
-  const filetype = req.query.filetype;
-  const uploadType = req.query.type || 'chat'; // 'chat', 'profile', 'group'
-
-  if (!filename || !filetype) {
-    return res
-      .status(400)
-      .json({ error: "Filename and filetype are required" });
-  }
-
-  if (!filetype.startsWith("image/")) {
-    return res.status(400).json({ error: "Invalid file type. Only images are allowed" });
-  }
-
-  const userId = req.user.id;
-  const s3Client = new S3Client({
+/**
+ * Creates a configured AWS S3 client for image upload operations.
+ * @returns {S3Client} Configured S3 client
+ */
+function createS3Instance() {
+  return new S3Client({
     credentials: {
       accessKeyId: AWS_ACCESS_KEY,
       secretAccessKey: AWS_SECRET,
     },
     region: process.env.AWS_REGION || "eu-north-1",
   });
+}
+
+/**
+ * Determines the S3 storage path based on upload type.
+ * @param {string} uploadCategory - One of 'chat', 'profile', or 'group'
+ * @param {string} userId - The uploader's ID
+ * @param {string} fileName - Original filename
+ * @returns {string} The S3 object key path
+ */
+function resolveUploadPath(uploadCategory, userId, fileName) {
+  const timestamp = Date.now();
+  switch (uploadCategory) {
+    case "profile":
+      return `primechat/profiles/${userId}/${timestamp}_${fileName}`;
+    case "group":
+      return `primechat/groups/${timestamp}_${fileName}`;
+    case "chat":
+    default:
+      return `primechat/chats/${userId}/${timestamp}_${fileName}`;
+  }
+}
+
+/**
+ * GET /user/presigned-url
+ * Generates a presigned S3 POST URL for secure client-side image uploads.
+ * Supports chat images, profile pictures, and group avatars.
+ */
+const generateUploadUrl = async (req, res) => {
+  const fileName = req.query.filename;
+  const fileType = req.query.filetype;
+  const uploadCategory = req.query.type || "chat";
+
+  if (!fileName || !fileType) {
+    return res.status(400).json({ error: "Filename and filetype are required" });
+  }
+
+  if (!fileType.startsWith("image/")) {
+    return res.status(400).json({ error: "Only image files are permitted" });
+  }
+
+  const uploaderId = req.user.id;
+  const s3 = createS3Instance();
+  const objectKey = resolveUploadPath(uploadCategory, uploaderId, fileName);
 
   try {
-    // Create different folder structure based on upload type
-    let keyPath;
-    switch(uploadType) {
-      case 'profile':
-        keyPath = `primechat/profiles/${userId}/${Date.now()}_${filename}`;
-        break;
-      case 'group':
-        keyPath = `primechat/groups/${Date.now()}_${filename}`;
-        break;
-      case 'chat':
-      default:
-        keyPath = `primechat/chats/${userId}/${Date.now()}_${filename}`;
-        break;
-    }
-
-    const { url, fields } = await createPresignedPost(s3Client, {
+    const { url, fields } = await createPresignedPost(s3, {
       Bucket: AWS_BUCKET_NAME,
-      Key: keyPath,
+      Key: objectKey,
       Conditions: [
-        ["content-length-range", 0, 10 * 1024 * 1024], // Max 10MB
-        ["starts-with", "$Content-Type", "image/"]
+        ["content-length-range", 0, 10 * 1024 * 1024],
+        ["starts-with", "$Content-Type", "image/"],
       ],
       Fields: {
         success_action_status: "201",
-        "Content-Type": filetype
+        "Content-Type": fileType,
       },
-      Expires: 15 * 60, // 15 minutes
+      Expires: 15 * 60,
     });
 
-    return res.status(200).json({ url, fields, key: keyPath });
-  } catch (error) {
-    console.error("Error generating presigned URL:", error);
-    return res.status(500).json({ error: error.message });
+    return res.status(200).json({ url, fields, key: objectKey });
+  } catch (s3Error) {
+    console.error("Presigned URL generation error:", s3Error);
+    return res.status(500).json({ error: s3Error.message });
   }
 };
 
-// Update user profile picture
-const updateProfilePicture = async (req, res) => {
+/**
+ * PUT /user/update-profile-picture
+ * Updates the authenticated user's profile avatar URL.
+ */
+const changeUserAvatar = async (req, res) => {
   try {
     const { profilePic } = req.body;
     const userId = req.user.id;
@@ -80,89 +109,96 @@ const updateProfilePicture = async (req, res) => {
       return res.status(400).json({ error: "Profile picture URL is required" });
     }
 
-    const user = await User.findByIdAndUpdate(
+    const updatedUser = await User.findByIdAndUpdate(
       userId,
       { profilePic },
       { new: true }
-    ).select('-password');
+    ).select("-password");
 
-    if (!user) {
+    if (!updatedUser) {
       return res.status(404).json({ error: "User not found" });
     }
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Profile picture updated successfully",
-      user
+      user: updatedUser,
     });
-  } catch (error) {
-    console.error("Error updating profile picture:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+  } catch (updateError) {
+    console.error("Avatar update error:", updateError);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
-// Update group profile picture
-const updateGroupPicture = async (req, res) => {
+/**
+ * PUT /user/update-group-picture
+ * Updates a group conversation's avatar image.
+ * Only group members are authorized to change the group picture.
+ */
+const changeGroupAvatar = async (req, res) => {
   try {
     const { conversationId, profilePic } = req.body;
-    const userId = req.user.id;
+    const requestingUserId = req.user.id;
 
     if (!conversationId || !profilePic) {
-      return res.status(400).json({ 
-        error: "Conversation ID and profile picture URL are required" 
+      return res.status(400).json({
+        error: "Conversation ID and profile picture URL are required",
       });
     }
 
-    const conversation = await Conversation.findById(conversationId);
+    const groupThread = await Conversation.findById(conversationId);
 
-    if (!conversation) {
+    if (!groupThread) {
       return res.status(404).json({ error: "Group not found" });
     }
 
-    if (!conversation.isGroup) {
+    if (!groupThread.isGroup) {
       return res.status(400).json({ error: "This is not a group conversation" });
     }
 
-    // Check if user is a member of the group
-    if (!conversation.members.includes(userId)) {
-      return res.status(403).json({ 
-        error: "You are not authorized to update this group" 
-      });
+    if (!groupThread.members.includes(requestingUserId)) {
+      return res.status(403).json({ error: "You are not authorized to update this group" });
     }
 
-    conversation.profilePic = profilePic;
-    await conversation.save();
+    groupThread.profilePic = profilePic;
+    await groupThread.save();
 
-    const updatedConversation = await Conversation.findById(conversationId)
+    const refreshedThread = await Conversation.findById(conversationId)
       .populate("members", "-password");
 
-    res.status(200).json({
+    return res.status(200).json({
       message: "Group picture updated successfully",
-      conversation: updatedConversation
+      conversation: refreshedThread,
     });
-  } catch (error) {
-    console.error("Error updating group picture:", error);
-    res.status(500).json({ error: "Internal Server Error" });
+  } catch (updateError) {
+    console.error("Group avatar update error:", updateError);
+    return res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
-// Get online status
-const getOnlineStatus = async (req, res) => {
-  const userId = req.params.id;
+/**
+ * GET /user/online-status/:id
+ * Returns the real-time online presence status of a user.
+ */
+const checkUserPresence = async (req, res) => {
+  const targetUserId = req.params.id;
+
   try {
-    const user = await User.findById(userId);
-    if (!user) {
+    const targetUser = await User.findById(targetUserId);
+
+    if (!targetUser) {
       return res.status(404).json({ error: "User not found" });
     }
-    res.status(200).json({ isOnline: user.isOnline });
-  } catch (error) {
-    console.log(error);
-    res.status(500).send("Internal Server Error");
+
+    return res.status(200).json({ isOnline: targetUser.isOnline });
+  } catch (queryError) {
+    console.log("Presence check error:", queryError);
+    return res.status(500).send("Internal Server Error");
   }
 };
 
-module.exports = { 
-  getPresignedUrl, 
-  getOnlineStatus,
-  updateProfilePicture,
-  updateGroupPicture
+module.exports = {
+  generateUploadUrl,
+  checkUserPresence,
+  changeUserAvatar,
+  changeGroupAvatar,
 };
